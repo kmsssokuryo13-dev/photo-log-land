@@ -1,1 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700;900&display=swap');
 @import "tailwindcss";
+
+body {
+    font-family: 'Noto Sans JP', sans-serif;
+    margin: 0;
+    background-color: #f8fafc;
+}
+
+/* 印刷設定 */
+@media print {
+    html, body { height: auto !important; overflow: visible !important; background: white !important; }
+    .no-print { display: none !important; }
+    main { display: block !important; height: auto !important; overflow: visible !important; }
+    .a4-page-container { display: block !important; width: 210mm !important; margin: 0 !important; padding: 0 !important; }
+    .a4-sheet {
+        width: 210mm !important; height: 297mm !important;
+        padding-left: 25mm !important; padding-right: 15mm !important;
+        padding-top: 15mm !important; padding-bottom: 15mm !important;
+        page-break-after: always !important; box-shadow: none !important;
+        border: none !important; display: flex !important; flex-direction: column !important;
+        background: white !important;
+    }
+    .point-card-box { border: 2px solid #000000 !important; break-inside: avoid !important; margin-bottom: 5mm !important; }
+    @page { size: A4 portrait; margin: 0; }
+}
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+.drag-ghost {
+    opacity: 0.4;
+    background-color: #e2e8f0 !important;
+}

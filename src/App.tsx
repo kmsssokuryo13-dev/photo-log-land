@@ -1,546 +1,535 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
+import type { DragEvent, ChangeEvent } from 'react';
 import {
-  DndContext,
-  closestCenter,
-  KeyboardSensor,
-  PointerSensor,
-  useSensor,
-  useSensors,
-} from '@dnd-kit/core';
-import type { DragEndEvent } from '@dnd-kit/core';
-import {
-  arrayMove,
-  SortableContext,
-  sortableKeyboardCoordinates,
-  rectSortingStrategy,
-  useSortable
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
-import { Trash2, Plus, GripVertical, Download, MapPin, Settings, X, UploadCloud, RotateCw } from 'lucide-react';
+  Camera, Settings2, Image, LayoutGrid, Upload, FolderOpen,
+  PlusCircle, GripVertical, Sparkles, Trash2, X, AlertCircle,
+  Calendar, Printer
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 
-// --- ユーティリティ関数 ---
+// --- 定数 ---
 
-// 配列をN個ずつのチャンク（塊）に分割
-const chunkArray = <T,>(arr: T[], size: number): T[][] => {
-  const chunked = [];
-  for (let i = 0; i < arr.length; i += size) {
-    chunked.push(arr.slice(i, i + size));
-  }
-  return chunked;
-};
+const INITIAL_MARK_TYPES = ["金属鋲", "金属標", "プラスチック杭", "コンクリート杭", "コンクリート角", "木杭", "刻印", "計算点", "真鍮標識"];
+const DEFAULT_LEDGER_TYPES = ["境界標識設置写真", "器械点設置写真", "測点写真"];
 
-// クライアントサイドでの画像圧縮処理
-const compressImage = (file: File): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new window.Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1200;
-        const MAX_HEIGHT = 1200;
-        let width = img.width;
-        let height = img.height;
+type ViewId = 'far' | 'middle' | 'close' | 'macro';
+const VIEW_TYPES: { id: ViewId; label: string }[] = [
+  { id: 'far', label: '遠景' },
+  { id: 'middle', label: '中景' },
+  { id: 'close', label: '近景' },
+  { id: 'macro', label: 'マクロ' }
+];
 
-        if (width > height) {
-          if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
-            width = MAX_WIDTH;
-          }
-        } else {
-          if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
-            height = MAX_HEIGHT;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL('image/jpeg', 0.8));
-        } else {
-          reject(new Error('Canvas context not available'));
-        }
-      };
-      img.onerror = (e) => reject(e);
-    };
-    reader.onerror = (e) => reject(e);
-  });
-};
-
-// 画像データを90度回転させる処理
-const rotateImageData = (url: string): Promise<string> => {
-  return new Promise((resolve) => {
-    const img = new window.Image();
-    img.src = url;
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.height;
-      canvas.height = img.width;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.translate(canvas.width / 2, canvas.height / 2);
-        ctx.rotate((90 * Math.PI) / 180);
-        ctx.drawImage(img, -img.width / 2, -img.height / 2);
-        resolve(canvas.toDataURL('image/jpeg', 0.8));
-      } else {
-        resolve(url);
-      }
-    };
-    img.onerror = () => resolve(url);
-  });
+type CompressionModeKey = 'original' | 'medium' | 'high';
+const COMPRESSION_MODES: Record<CompressionModeKey, { label: string; maxDim: number; quality: number; desc: string }> = {
+  original: { label: 'オリジナル', maxDim: Infinity, quality: 1.0, desc: '無加工' },
+  medium: { label: '中圧縮', maxDim: 1600, quality: 0.8, desc: '14枚で4〜6MB' },
+  high: { label: '高圧縮', maxDim: 1024, quality: 0.6, desc: '40枚で3〜5MB' }
 };
 
 // --- 型定義 ---
-type Photo = { id: string; url: string };
-type BoundaryPoint = {
+
+interface FileData {
   id: string;
-  name: string;
-  photos: Photo[];
-};
-type PhotoWithCaption = Photo & { caption: string; pointId: string };
+  fileName: string;
+  baseName: string;
+  viewType: ViewId;
+  direction: number;
+  url: string;
+  lastModified: string;
+}
 
-// --- コンポーネント群 ---
+interface BoundaryPoint {
+  id: string;
+  pointName: string;
+  markType: string;
+  directions: Record<number, Partial<Record<ViewId, FileData>>>;
+  selectedDirection: number;
+  notes: string;
+}
 
-// ドラッグ可能な写真アイテムコンポーネント
-const SortablePhotoItem = ({
-  id,
-  url,
-  caption,
-  onRemove,
-  onRotate
-}: {
-  id: string,
-  url: string,
-  caption: string,
-  onRemove: (id: string) => void,
-  onRotate: (id: string) => void
-}) => {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    zIndex: isDragging ? 10 : 1,
-  };
+interface LedgerSettings {
+  ledgerType: string;
+  customLedgerType: string;
+  siteName: string;
+}
 
-  return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className={`relative group bg-white border rounded-lg shadow-sm overflow-hidden flex flex-col ${
-        isDragging ? 'opacity-50 ring-2 ring-green-500 border-green-500' : 'border-gray-200'
-      }`}
-    >
-      {/* 左上：回転ボタン */}
-      <div className="absolute top-2 left-2 z-20 print:hidden flex items-center gap-2">
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onRotate(id);
-          }}
-          className="p-1 bg-white/90 backdrop-blur-sm rounded-md shadow-sm hover:bg-gray-100 text-gray-700 cursor-pointer border border-gray-200"
-          title="90度回転"
-        >
-          <RotateCw size={14} />
-        </button>
-      </div>
+type ViewVisibility = Record<ViewId, boolean>;
 
-      {/* 右上：操作ボタン */}
-      <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 print:hidden">
-        <button
-          {...attributes}
-          {...listeners}
-          className="p-1.5 bg-white/90 backdrop-blur-sm rounded-md shadow-sm hover:bg-gray-100 text-gray-700 cursor-grab active:cursor-grabbing"
-          title="ドラッグして並び替え"
-        >
-          <GripVertical size={16} />
-        </button>
-        <button
-          onClick={() => onRemove(id)}
-          className="p-1.5 bg-red-500/90 backdrop-blur-sm rounded-md shadow-sm hover:bg-red-600 text-white cursor-pointer"
-          title="削除"
-        >
-          <Trash2 size={16} />
-        </button>
-      </div>
+// --- アイコンマッピング ---
 
-      <div className="flex-1 aspect-square bg-gray-50 flex items-center justify-center overflow-hidden">
-        <img src={url} alt={caption} className="w-full h-full object-cover" />
-      </div>
-      <div className="p-2.5 text-center text-sm font-semibold text-slate-800 bg-slate-50 border-t border-gray-200">
-        {caption}
-      </div>
-    </div>
-  );
+const ICON_MAP: Record<string, LucideIcon> = {
+  Camera, Settings2, Image, LayoutGrid, Upload, FolderOpen,
+  PlusCircle, GripVertical, Sparkles, Trash2, X, AlertCircle,
+  Calendar, Printer
 };
 
-// 印刷用プレビューレイアウト
-const PrintLayout = ({ allPhotos }: { allPhotos: PhotoWithCaption[] }) => {
-  const chunks = chunkArray(allPhotos, 8);
+function Icon({ name, size = 20, className = "" }: { name: string; size?: number; className?: string }) {
+  const LucideIconComponent = ICON_MAP[name];
+  if (!LucideIconComponent) return null;
+  return <LucideIconComponent size={size} className={className} />;
+}
 
-  return (
-    <div className="w-full bg-white text-black">
-      <style>{`
-        @page { size: A4 portrait; margin: 15mm; }
-        @media print {
-          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; margin: 0; background: white; }
-          .page-break { page-break-after: always; }
-          .page-break:last-child { page-break-after: auto; }
-          .avoid-break { page-break-inside: avoid; }
+// --- ユーティリティ ---
+
+function getStorageItem<T>(key: string, initialValue: T): T {
+  try {
+    const item = window.localStorage.getItem(key);
+    return item ? JSON.parse(item) as T : initialValue;
+  } catch { return initialValue; }
+}
+
+function setStorageItem<T>(key: string, value: T): void {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
+async function callGemini(payload: object, currentApiKey: string, retries = 5, delay = 1000): Promise<{ candidates?: { content?: { parts?: { text?: string }[] } }[] }> {
+  if (!currentApiKey) throw new Error("APIキーが未設定です。");
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${currentApiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      }
+    );
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error((data as { error?: { message?: string } }).error?.message || "Gemini APIエラー");
+    }
+    return await response.json();
+  } catch (error) {
+    if (retries > 0 && !(error instanceof Error && (error.message.includes("403") || error.message.includes("400")))) {
+      await new Promise(r => setTimeout(r, delay));
+      return callGemini(payload, currentApiKey, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
+
+function compressImage(file: File, mode: CompressionModeKey): Promise<string> {
+  return new Promise((resolve) => {
+    const settings = COMPRESSION_MODES[mode];
+    if (mode === 'original') {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result as string);
+      reader.readAsDataURL(file);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const width = img.width;
+        const height = img.height;
+        const ratio = Math.min(settings.maxDim / width, settings.maxDim / height, 1);
+        canvas.width = width * ratio;
+        canvas.height = height * ratio;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', settings.quality));
         }
-      `}</style>
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
-      {chunks.map((chunk, i) => (
-        <div key={`chunk-${i}`} className="page-break w-full pt-2">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-            {chunk.map((photo) => (
-              <div key={photo.id} className="flex flex-col items-center justify-start h-[230px] avoid-break">
-                <img src={photo.url} alt={photo.caption} className="w-full h-[200px] object-contain mb-1" />
-                <p className="text-sm font-medium text-center text-gray-800">{photo.caption}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};
+function parseFileName(fileName: string): { baseName: string; viewType: ViewId; direction: number } {
+  const nameWithoutExt = fileName.substring(0, fileName.lastIndexOf('.')) || fileName;
+  const pattern = /^(.*?)(\.?)(遠景|近景|中景|マクロ|[EKMC])(\d*)$/i;
+  const match = nameWithoutExt.match(pattern);
+  let baseName: string;
+  let viewType: ViewId = 'far';
+  let direction = 1;
+  if (match) {
+    baseName = match[1];
+    const typeKeyword = match[3].toUpperCase();
+    if (typeKeyword === 'E' || typeKeyword === '遠景') viewType = 'far';
+    else if (typeKeyword === 'C' || typeKeyword === '中景') viewType = 'middle';
+    else if (typeKeyword === 'K' || typeKeyword === '近景') viewType = 'close';
+    else if (typeKeyword === 'M' || typeKeyword === 'マクロ') viewType = 'macro';
+    direction = match[4] ? parseInt(match[4], 10) : 1;
+  } else {
+    baseName = nameWithoutExt;
+  }
+  return { baseName, viewType, direction };
+}
 
 // --- メインアプリケーション ---
+
 export default function App() {
-  const [boundaryPoints, setBoundaryPoints] = useState<BoundaryPoint[]>([
-    { id: crypto.randomUUID(), name: '境界点 1', photos: [] }
-  ]);
+  const [activeTab, setActiveTab] = useState<'import' | 'edit' | 'preview'>('import');
+  const [points, setPoints] = useState<BoundaryPoint[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 });
 
-  // センサー設定 (DnD)
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
+  // Settings with localStorage
+  const [apiKey, setApiKey] = useState(() => getStorageItem('apiKey', ''));
+  const [markTypes, setMarkTypes] = useState(() => getStorageItem('markTypes', INITIAL_MARK_TYPES));
+  const [itemsPerPage, setItemsPerPage] = useState(() => getStorageItem('itemsPerPage', 3));
+  const [showDate, setShowDate] = useState(() => getStorageItem('showDate', false));
+  const [compressionMode, setCompressionMode] = useState<CompressionModeKey>(() => getStorageItem('compressionMode', 'medium'));
+  const [ledgerSettings, setLedgerSettings] = useState<LedgerSettings>(() => getStorageItem('ledgerSettings', {
+    ledgerType: DEFAULT_LEDGER_TYPES[0],
+    customLedgerType: '',
+    siteName: ''
+  }));
+  const [viewVisibility, setViewVisibility] = useState<ViewVisibility>(() => getStorageItem('viewVisibility', { far: true, middle: false, close: true, macro: false }));
 
-  // 全写真をキャプション付きでフラット化
-  const allPhotosWithCaption: PhotoWithCaption[] = useMemo(() => {
-    return boundaryPoints.flatMap((point) =>
-      point.photos.map((photo, photoIndex) => ({
-        ...photo,
-        pointId: point.id,
-        caption: point.photos.length > 1
-          ? `${point.name} - ${photoIndex + 1}`
-          : point.name
-      }))
-    );
-  }, [boundaryPoints]);
+  const [aiProcessingIds, setAiProcessingIds] = useState<Set<string>>(new Set());
+  const [errorMessage, setErrorMessage] = useState("");
+  const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
+  const [newMarkType, setNewMarkType] = useState("");
 
-  // 境界点の追加
-  const handleAddPoint = () => {
-    const nextNum = boundaryPoints.length + 1;
-    setBoundaryPoints(prev => [
-      ...prev,
-      { id: crypto.randomUUID(), name: `境界点 ${nextNum}`, photos: [] }
-    ]);
+  // localStorage sync
+  useEffect(() => setStorageItem('apiKey', apiKey), [apiKey]);
+  useEffect(() => setStorageItem('markTypes', markTypes), [markTypes]);
+  useEffect(() => setStorageItem('itemsPerPage', itemsPerPage), [itemsPerPage]);
+  useEffect(() => setStorageItem('showDate', showDate), [showDate]);
+  useEffect(() => setStorageItem('compressionMode', compressionMode), [compressionMode]);
+  useEffect(() => setStorageItem('ledgerSettings', ledgerSettings), [ledgerSettings]);
+  useEffect(() => setStorageItem('viewVisibility', viewVisibility), [viewVisibility]);
+
+  const handleAddMarkType = () => {
+    if (newMarkType && !markTypes.includes(newMarkType)) {
+      setMarkTypes([...markTypes, newMarkType]);
+      setNewMarkType("");
+    }
   };
 
-  // 境界点の削除
-  const handleRemovePoint = (pointId: string) => {
-    setBoundaryPoints(prev => prev.filter(p => p.id !== pointId));
+  const handleDeleteMarkType = (type: string) => {
+    if (confirm(`「${type}」を削除しますか？`)) {
+      setMarkTypes(markTypes.filter(t => t !== type));
+    }
   };
 
-  // 境界点名の変更
-  const handleUpdatePointName = (pointId: string, name: string) => {
-    setBoundaryPoints(prev =>
-      prev.map(p => p.id === pointId ? { ...p, name } : p)
-    );
-  };
-
-  // 写真追加ハンドラー
-  const handleAddPhotos = async (e: React.ChangeEvent<HTMLInputElement>, pointId: string) => {
-    const files = Array.from(e.target.files || []);
-    if (!files.length) return;
-
+  const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
     setIsProcessing(true);
-    try {
-      const newPhotos = await Promise.all(
-        files.map(async (file) => {
-          const url = await compressImage(file);
-          return { id: crypto.randomUUID(), url };
-        })
-      );
-
-      setBoundaryPoints(prev =>
-        prev.map(p =>
-          p.id === pointId
-            ? { ...p, photos: [...p.photos, ...newPhotos] }
-            : p
-        )
-      );
-    } catch (error) {
-      console.error("画像の処理中にエラーが発生しました:", error);
-      alert("画像の読み込みに失敗しました。");
-    } finally {
-      setIsProcessing(false);
-      e.target.value = '';
+    setProcessingProgress({ current: 0, total: files.length });
+    const newFileData: FileData[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const { baseName, viewType, direction } = parseFileName(file.name);
+      const compressedUrl = await compressImage(file, compressionMode);
+      newFileData.push({
+        id: Math.random().toString(36).substr(2, 9),
+        fileName: file.name, baseName, viewType, direction, url: compressedUrl,
+        lastModified: new Date(file.lastModified).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' })
+      });
+      setProcessingProgress(prev => ({ ...prev, current: i + 1 }));
     }
+    setPoints(prev => {
+      const updated = [...prev];
+      newFileData.forEach(data => {
+        const idx = updated.findIndex(p => p.pointName === data.baseName);
+        if (idx > -1) {
+          if (!updated[idx].directions[data.direction]) updated[idx].directions[data.direction] = {};
+          updated[idx].directions[data.direction][data.viewType] = data;
+        } else {
+          updated.push({
+            id: Math.random().toString(36).substr(2, 9),
+            pointName: data.baseName, markType: "未設定",
+            directions: { [data.direction]: { [data.viewType]: data } },
+            selectedDirection: data.direction, notes: ""
+          });
+        }
+      });
+      return updated;
+    });
+    setIsProcessing(false);
+    if (newFileData.length > 0) setActiveTab('edit');
   };
 
-  // 写真削除ハンドラー
-  const handleRemovePhoto = (photoId: string, pointId: string) => {
-    setBoundaryPoints(prev =>
-      prev.map(p =>
-        p.id === pointId
-          ? { ...p, photos: p.photos.filter(ph => ph.id !== photoId) }
-          : p
-      )
-    );
+  const addCalculationPoint = () => {
+    const newPoint: BoundaryPoint = {
+      id: Math.random().toString(36).substr(2, 9),
+      pointName: "",
+      markType: "計算点",
+      directions: { 1: {} },
+      selectedDirection: 1,
+      notes: ""
+    };
+    setPoints(prev => [...prev, newPoint]);
   };
 
-  // 写真回転処理
-  const handleRotatePhoto = async (photoId: string, pointId: string) => {
-    const point = boundaryPoints.find(p => p.id === pointId);
-    if (!point) return;
-    const photo = point.photos.find(ph => ph.id === photoId);
+  const performAIIdentification = async (point: BoundaryPoint) => {
+    const dirData = point.directions[point.selectedDirection] || {};
+    const photo = dirData.macro || dirData.close || dirData.middle || dirData.far;
     if (!photo) return;
+    const base64Data = photo.url.split(',')[1];
+    const customPrompt = markTypes.filter(t => !INITIAL_MARK_TYPES.includes(t)).length > 0
+      ? `\n追加選択肢: [${markTypes.filter(t => !INITIAL_MARK_TYPES.includes(t)).join(', ')}]` : "";
 
-    const newUrl = await rotateImageData(photo.url);
-
-    setBoundaryPoints(prev =>
-      prev.map(p =>
-        p.id === pointId
-          ? { ...p, photos: p.photos.map(ph => ph.id === photoId ? { ...ph, url: newUrl } : ph) }
-          : p
-      )
-    );
+    const promptText = `境界標識判別: [金属鋲, 金属標, プラスチック杭, コンクリート杭, コンクリート角, 木杭, 刻印, 真鍮標識]${customPrompt} から1つ選んで名称のみ返せ。`;
+    const result = await callGemini({ contents: [{ parts: [{ text: promptText }, { inlineData: { mimeType: "image/jpeg", data: base64Data } }] }] }, apiKey);
+    let aiText = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    aiText = typeof aiText === 'string' ? aiText.replace(/[`*#\n\r]/g, "").trim() : "";
+    const matchedType = markTypes.find(t => aiText.includes(t));
+    if (matchedType) setPoints(prev => prev.map(p => p.id === point.id ? { ...p, markType: matchedType } : p));
   };
 
-  // 並び替え完了ハンドラー
-  const handleDragEnd = (event: DragEndEvent, pointId: string) => {
-    const { active, over } = event;
-    if (over && active.id !== over.id) {
-      setBoundaryPoints(prev =>
-        prev.map(p => {
-          if (p.id !== pointId) return p;
-          const oldIndex = p.photos.findIndex(ph => ph.id === active.id);
-          const newIndex = p.photos.findIndex(ph => ph.id === over.id);
-          return { ...p, photos: arrayMove(p.photos, oldIndex, newIndex) };
-        })
-      );
+  const identifyMarkWithAI = async (pointId: string) => {
+    const point = points.find(p => p.id === pointId);
+    if (!point || !apiKey) return;
+    setAiProcessingIds(prev => new Set(prev).add(pointId));
+    setErrorMessage("");
+    try { await performAIIdentification(point); }
+    catch (error) { setErrorMessage("AIエラー: " + (error instanceof Error ? error.message : String(error))); }
+    finally { setAiProcessingIds(prev => { const next = new Set(prev); next.delete(pointId); return next; }); }
+  };
+
+  const identifyAllWithAI = async () => {
+    const targets = points.filter(p => p.markType === "未設定" && !aiProcessingIds.has(p.id));
+    if (targets.length === 0 || !apiKey) return;
+    setErrorMessage("");
+    const chunkSize = 5;
+    for (let i = 0; i < targets.length; i += chunkSize) {
+      const chunk = targets.slice(i, i + chunkSize);
+      setAiProcessingIds(prev => { const next = new Set(prev); chunk.forEach(p => next.add(p.id)); return next; });
+      await Promise.all(chunk.map(async (point) => {
+        try { await performAIIdentification(point); } catch { /* ignore */ }
+        finally { setAiProcessingIds(prev => { const next = new Set(prev); next.delete(point.id); return next; }); }
+      }));
     }
   };
 
-  // 印刷をトリガーする関数
-  const handlePrint = () => {
-    const printArea = document.getElementById('print-area');
-    if (!printArea) {
-      window.print();
-      return;
-    }
-
-    const clone = printArea.cloneNode(true) as HTMLElement;
-    clone.classList.remove('hidden', 'print:block');
-    clone.style.display = 'block';
-
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) {
-      alert('ポップアップがブロックされました。ブラウザのアドレスバー付近からポップアップを許可していただくか、キーボードの Ctrl+P (Macは Cmd+P) を押して直接印刷してください。');
-      window.print();
-      return;
-    }
-
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>写真台帳（土地） - 印刷プレビュー</title>
-          <script src="https://cdn.tailwindcss.com"><${""}/script>
-          <style>
-            @page { size: A4 portrait; margin: 15mm; }
-            body {
-              -webkit-print-color-adjust: exact;
-              print-color-adjust: exact;
-              margin: 0;
-              background: white;
-              color: black;
-              font-family: sans-serif;
-            }
-            .page-break { page-break-before: always; }
-            .avoid-break { page-break-inside: avoid; }
-          </style>
-        </head>
-        <body>
-          ${clone.outerHTML}
-          <script>
-            setTimeout(() => {
-              window.print();
-            }, 800);
-          <${""}/script>
-        </body>
-      </html>
-    `;
-
-    printWindow.document.open();
-    printWindow.document.write(htmlContent);
-    printWindow.document.close();
+  const handleDragStart = (e: DragEvent<HTMLDivElement>, index: number) => { setDraggedItemIndex(index); e.dataTransfer.effectAllowed = "move"; };
+  const handleDragOver = (e: DragEvent<HTMLDivElement>, index: number) => {
+    e.preventDefault();
+    if (draggedItemIndex === null || draggedItemIndex === index) return;
+    const newPoints = [...points];
+    const item = newPoints.splice(draggedItemIndex, 1)[0];
+    newPoints.splice(index, 0, item);
+    setDraggedItemIndex(index);
+    setPoints(newPoints);
   };
 
-  const totalPhotos = boundaryPoints.reduce((sum, p) => sum + p.photos.length, 0);
+  const updatePoint = (id: string, updates: Partial<BoundaryPoint>) => setPoints(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
+  const deletePoint = (id: string) => setPoints(prev => prev.filter(p => p.id !== id));
+
+  const chunkedPoints = useMemo(() => {
+    const chunks: BoundaryPoint[][] = [];
+    for (let i = 0; i < points.length; i += itemsPerPage) chunks.push(points.slice(i, i + itemsPerPage));
+    return chunks;
+  }, [points, itemsPerPage]);
+
+  const displayLedgerName = ledgerSettings.ledgerType === "その他" ? ledgerSettings.customLedgerType : ledgerSettings.ledgerType;
+  const enabledViewTypes = VIEW_TYPES.filter(vt => viewVisibility[vt.id]);
+
+  // --- ファイル入力のref ---
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
 
   return (
-    <>
-      <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-20 print:hidden">
-        {/* ヘッダー */}
-        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-50 shadow-sm">
-          <h1 className="text-xl font-bold flex items-center gap-2 text-slate-800">
-            <MapPin className="text-green-600" />
-            写真台帳（土地）
-          </h1>
+    <div className="flex flex-col h-full print:h-auto">
+      {errorMessage && (
+        <div className="no-print fixed top-16 left-1/2 -translate-x-1/2 z-[100] bg-red-600 text-white px-6 py-3 rounded-2xl shadow-xl flex items-center gap-3">
+          <Icon name="AlertCircle" size={18} /><span className="text-sm font-bold">{errorMessage}</span>
+          <button onClick={() => setErrorMessage("")} className="hover:bg-red-700 p-1 rounded">×</button>
+        </div>
+      )}
 
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="flex items-center gap-2 bg-white border border-gray-300 hover:bg-gray-50 text-slate-700 px-4 py-2 rounded-md font-medium transition-colors shadow-sm lg:hidden"
-            >
-              <Settings size={18} />
+      <header className="bg-white border-b border-slate-200 px-6 py-2 flex items-center justify-between no-print shrink-0">
+        <div className="flex items-center gap-2">
+          <div className="bg-blue-600 p-1 rounded-lg"><Icon name="Camera" size={18} className="text-white" /></div>
+          <h1 className="font-bold text-slate-800 text-sm">境界点写真管理</h1>
+        </div>
+        <nav className="flex bg-slate-100 p-1 rounded-xl">
+          {(['import', 'edit', 'preview'] as const).map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} className={`px-5 py-1.5 rounded-lg text-xs font-bold transition ${activeTab === tab ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>
+              {tab === 'import' ? '読込' : tab === 'edit' ? '編集' : 'プレビュー'}
             </button>
-            {totalPhotos > 0 && (
-              <button
-                onClick={handlePrint}
-                className="flex items-center gap-2 bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md font-medium transition-colors shadow-sm"
-              >
-                <Download size={18} />
-                PDFを出力
-              </button>
-            )}
-          </div>
-        </header>
+          ))}
+        </nav>
+        <button onClick={identifyAllWithAI} disabled={points.length === 0 || aiProcessingIds.size > 0} className="bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 flex items-center gap-2 disabled:opacity-50">
+          <Icon name="Sparkles" size={14} className={aiProcessingIds.size > 0 ? "animate-spin" : ""} /> 一括AI判別
+        </button>
+      </header>
 
-        <main className="max-w-7xl mx-auto p-6 flex flex-col lg:flex-row gap-8 items-start">
-
-          {/* 左サイドバー: 境界点設定 */}
-          <aside className={`w-full lg:w-80 bg-white border border-gray-200 rounded-xl shadow-sm p-5 shrink-0 sticky top-24 ${showSettings ? '' : 'hidden lg:block'}`}>
-            <div className="flex items-center gap-2 mb-4 border-b border-gray-100 pb-3">
-              <Settings size={20} className="text-slate-500" />
-              <h2 className="text-lg font-bold text-slate-800">境界点設定</h2>
-            </div>
-            <p className="text-xs text-slate-500 mb-4">
-              境界点を追加し、名前を設定します。各境界点に写真を登録できます。
-            </p>
-
-            <div className="space-y-3 mb-4 max-h-[60vh] overflow-y-auto">
-              {boundaryPoints.map((point, index) => (
-                <div key={point.id} className="p-3 bg-slate-50 border border-slate-200 rounded-lg relative group/item">
-                  {boundaryPoints.length > 1 && (
-                    <button
-                      onClick={() => handleRemovePoint(point.id)}
-                      className="absolute -top-2 -right-2 bg-red-100 text-red-600 hover:bg-red-500 hover:text-white rounded-full p-1 opacity-0 group-hover/item:opacity-100 transition-opacity"
-                    >
-                      <X size={14} />
-                    </button>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-green-600 bg-green-50 px-2 py-0.5 rounded">
-                      {index + 1}
-                    </span>
-                    <input
-                      type="text"
-                      value={point.name}
-                      onChange={(e) => handleUpdatePointName(point.id, e.target.value)}
-                      placeholder="境界点名"
-                      className="flex-1 px-2 py-1.5 text-sm border rounded focus:ring-2 focus:ring-green-500 outline-none"
-                    />
-                  </div>
-                  <div className="mt-2 text-xs text-slate-400">
-                    写真: {point.photos.length}枚
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <button
-              onClick={handleAddPoint}
-              className="w-full flex items-center justify-center gap-1 py-2 border-2 border-dashed border-slate-300 text-slate-600 rounded-lg hover:border-green-400 hover:text-green-600 transition-colors text-sm font-medium"
-            >
-              <Plus size={16} /> 境界点を追加
-            </button>
-          </aside>
-
-          {/* メイン: 写真エリア */}
-          <div className="flex-1 w-full space-y-10">
-            {boundaryPoints.map((point) => (
-              <section key={point.id}>
-                <div className="flex items-center justify-between mb-4 border-b border-gray-200 pb-2">
-                  <div className="flex items-center gap-3">
-                    <MapPin size={20} className="text-green-600" />
-                    <h2 className="text-xl font-bold text-slate-800">{point.name}</h2>
-                    <span className="text-sm text-slate-400">({point.photos.length}枚)</span>
-                  </div>
-
-                  <label className="cursor-pointer flex items-center gap-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-slate-700 px-4 py-2 rounded-md text-sm font-medium transition-colors shadow-sm">
-                    <UploadCloud size={16} />
-                    写真を追加
-                    <input
-                      type="file"
-                      multiple
-                      accept="image/*"
-                      className="hidden"
-                      onChange={(e) => handleAddPhotos(e, point.id)}
-                      disabled={isProcessing}
-                    />
-                  </label>
-                </div>
-
-                {point.photos.length === 0 ? (
-                  <div className="bg-slate-50 border-2 border-dashed border-slate-200 rounded-xl p-10 text-center text-slate-500">
-                    <MapPin className="mx-auto mb-2 opacity-50" size={32} />
-                    <p>右上のボタンから境界点の写真を追加してください。</p>
-                  </div>
-                ) : (
-                  <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={(e) => handleDragEnd(e, point.id)}>
-                    <SortableContext items={point.photos.map(p => p.id)} strategy={rectSortingStrategy}>
-                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                        {point.photos.map((photo, photoIndex) => {
-                          const caption = point.photos.length > 1
-                            ? `${point.name} - ${photoIndex + 1}`
-                            : point.name;
-                          return (
-                            <SortablePhotoItem
-                              key={photo.id}
-                              id={photo.id}
-                              url={photo.url}
-                              caption={caption}
-                              onRemove={(id) => handleRemovePhoto(id, point.id)}
-                              onRotate={(id) => handleRotatePhoto(id, point.id)}
-                            />
-                          );
-                        })}
-                      </div>
-                    </SortableContext>
-                  </DndContext>
-                )}
-              </section>
-            ))}
-          </div>
-        </main>
-
-        {/* 処理中のオーバーレイ */}
+      <main className="flex-1 overflow-hidden print:overflow-visible print:block relative">
         {isProcessing && (
-          <div className="fixed inset-0 bg-white/50 backdrop-blur-sm z-[100] flex items-center justify-center">
-            <div className="bg-white px-6 py-4 rounded-lg shadow-lg border border-slate-200 flex items-center gap-3">
-              <div className="w-5 h-5 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
-              <span className="font-medium text-slate-700">写真を処理しています...</span>
+          <div className="absolute inset-0 z-50 bg-white/80 backdrop-blur-sm flex flex-col items-center justify-center">
+            <div className="bg-white p-8 rounded-3xl shadow-2xl flex flex-col items-center gap-4">
+              <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+              <p className="font-bold text-sm">最適化中 ({processingProgress.current}/{processingProgress.total})</p>
             </div>
           </div>
         )}
-      </div>
 
-      {/* 印刷用のレイアウト */}
-      <div id="print-area" className="hidden print:block">
-        <PrintLayout allPhotos={allPhotosWithCaption} />
-      </div>
-    </>
+        {/* === 読込タブ === */}
+        {activeTab === 'import' && (
+          <div className="overflow-y-auto h-full p-8 max-w-5xl mx-auto space-y-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* 基本設定 */}
+              <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
+                <h2 className="text-[10px] font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Settings2" size={14} />基本設定</h2>
+                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Gemini APIキー" className="w-full bg-slate-50 border rounded-lg px-2 py-1.5 text-xs font-bold" />
+                <select value={ledgerSettings.ledgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, ledgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-xs font-bold">
+                  {DEFAULT_LEDGER_TYPES.map(t => <option key={t}>{t}</option>)}<option>その他</option>
+                </select>
+                {ledgerSettings.ledgerType === "その他" && <input type="text" value={ledgerSettings.customLedgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, customLedgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-xs font-bold" placeholder="台帳名を入力" />}
+                <input type="text" value={ledgerSettings.siteName} onChange={e => setLedgerSettings({ ...ledgerSettings, siteName: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-xs font-bold" placeholder="現場名称" />
+                <div className="mt-4 pt-4 border-t">
+                  <label className="text-[9px] font-bold text-slate-400 block mb-2">標識リスト</label>
+                  <div className="flex gap-1 mb-2">
+                    <input type="text" value={newMarkType} onChange={e => setNewMarkType(e.target.value)} placeholder="追加" className="flex-1 bg-slate-50 border rounded px-2 py-1 text-xs font-bold" />
+                    <button onClick={handleAddMarkType} className="bg-blue-600 text-white px-2 rounded text-[10px] font-bold">追加</button>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {markTypes.map(t => <span key={t} className="px-2 py-0.5 bg-slate-100 border rounded text-[9px] font-bold flex items-center gap-1">{t}<button onClick={() => handleDeleteMarkType(t)}><Icon name="X" size={10} /></button></span>)}
+                  </div>
+                </div>
+              </div>
+              {/* 画質設定 */}
+              <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
+                <h2 className="text-[10px] font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Image" size={14} />画質設定</h2>
+                {(Object.entries(COMPRESSION_MODES) as [CompressionModeKey, typeof COMPRESSION_MODES[CompressionModeKey]][]).map(([k, v]) => <button key={k} onClick={() => setCompressionMode(k)} className={`w-full text-left p-2 rounded-lg border text-[10px] font-bold transition ${compressionMode === k ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 border-slate-200'}`}>{v.label}</button>)}
+              </div>
+              {/* 表示設定 */}
+              <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
+                <h2 className="text-[10px] font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="LayoutGrid" size={14} />表示設定</h2>
+                <div className="flex gap-2">{[1, 2, 3].map(n => <button key={n} onClick={() => setItemsPerPage(n)} className={`flex-1 py-1 rounded-lg border text-[10px] font-bold ${itemsPerPage === n ? 'bg-blue-600 text-white' : 'bg-slate-50'}`}>{n}点/頁</button>)}</div>
+                <button onClick={() => setShowDate(!showDate)} className={`w-full py-1.5 rounded-lg text-[10px] font-bold border flex items-center justify-center gap-2 transition ${showDate ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-400'}`}><Icon name="Calendar" size={12} /> 撮影日: {showDate ? 'ON' : 'OFF'}</button>
+                <div className="grid grid-cols-2 gap-2 mt-2">{VIEW_TYPES.map(vt => <button key={vt.id} onClick={() => setViewVisibility(v => ({ ...v, [vt.id]: !v[vt.id] }))} className={`px-2 py-1 border rounded text-[9px] font-bold flex justify-between items-center transition ${viewVisibility[vt.id] ? 'border-blue-300 bg-blue-50 text-blue-700' : 'text-slate-400 bg-slate-50'}`}>{vt.label}<span>{viewVisibility[vt.id] ? '●' : '○'}</span></button>)}</div>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-6">
+              <label className="flex flex-col items-center justify-center border-4 border-dashed border-slate-200 bg-white rounded-3xl p-12 cursor-pointer hover:border-blue-400 group transition">
+                <Icon name="Upload" size={48} className="text-slate-200 mb-2 group-hover:text-blue-200" />
+                <span className="font-bold text-slate-400 text-sm">ファイル選択</span>
+                <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileUpload} accept="image/*" />
+              </label>
+              <label className="flex flex-col items-center justify-center border-4 border-dashed border-slate-200 bg-white rounded-3xl p-12 cursor-pointer hover:border-blue-400 group transition">
+                <Icon name="FolderOpen" size={48} className="text-slate-200 mb-2 group-hover:text-blue-200" />
+                <span className="font-bold text-slate-400 text-sm">フォルダ読込</span>
+                {/* @ts-expect-error webkitdirectory is a non-standard attribute */}
+                <input ref={folderInputRef} type="file" webkitdirectory="true" className="hidden" onChange={handleFileUpload} />
+              </label>
+            </div>
+          </div>
+        )}
+
+        {/* === 編集タブ === */}
+        {activeTab === 'edit' && (
+          <div className="flex h-full no-print bg-slate-100">
+            <aside className="w-56 border-r bg-white overflow-hidden flex flex-col shrink-0">
+              <div className="p-3 border-b flex flex-col gap-2">
+                <button onClick={addCalculationPoint} className="w-full bg-slate-900 text-white py-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition">
+                  <Icon name="PlusCircle" size={14} /> 計算点を追加
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                {points.map((p, i) => (
+                  <div key={p.id} draggable onDragStart={e => handleDragStart(e, i)} onDragOver={e => handleDragOver(e, i)} onDragEnd={() => setDraggedItemIndex(null)} className={`text-[10px] font-bold p-2 bg-slate-50 border rounded truncate flex items-center gap-2 cursor-grab transition-colors ${draggedItemIndex === i ? 'drag-ghost' : 'hover:border-blue-300 hover:bg-blue-50'}`}>
+                    <Icon name="GripVertical" size={12} className="text-slate-300" />
+                    {aiProcessingIds.has(p.id) && <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping shrink-0"></div>}
+                    <span className="truncate">{p.pointName || "(未入力)"}</span>
+                    {p.markType === "計算点" && <span className="ml-auto text-[8px] bg-slate-200 px-1 rounded">計</span>}
+                  </div>
+                ))}
+              </div>
+            </aside>
+            <section className="flex-1 overflow-y-auto p-6 space-y-4">
+              {points.map(point => {
+                const dirData = point.directions[point.selectedDirection] || {};
+                const isAiWorking = aiProcessingIds.has(point.id);
+                return (
+                  <div key={point.id} className={`bg-white rounded-xl border shadow-sm p-4 transition ${isAiWorking ? 'ring-2 ring-blue-500/20' : ''}`}>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-4">
+                        <div className="flex flex-col">
+                          <span className="text-[9px] font-bold text-slate-400">点名</span>
+                          <input type="text" value={point.pointName} onChange={e => updatePoint(point.id, { pointName: e.target.value })} className="text-sm font-black bg-transparent border-b-2 border-transparent focus:border-blue-500 focus:outline-none w-32 px-1" />
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[9px] font-bold text-slate-400">標識</span>
+                          <div className="flex items-center gap-2">
+                            <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value })} className="border rounded px-2 py-1 text-xs font-bold bg-slate-50 h-8">
+                              <option value="未設定">未設定</option>
+                              {markTypes.map(t => <option key={t}>{t}</option>)}
+                            </select>
+                            <button onClick={() => identifyMarkWithAI(point.id)} disabled={isAiWorking || point.markType === "計算点"} className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${isAiWorking ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50 disabled:opacity-30'}`}>
+                              {isAiWorking ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Icon name="Sparkles" size={14} />}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-1 items-center">
+                        {Object.keys(point.directions).sort((a, b) => Number(a) - Number(b)).map(d => (
+                          <button key={d} onClick={() => updatePoint(point.id, { selectedDirection: parseInt(d) })} className={`px-3 py-1 rounded border text-[10px] font-bold transition ${point.selectedDirection === parseInt(d) ? 'bg-blue-600 text-white' : 'bg-white text-slate-400'}`}>方向 {d}</button>
+                        ))}
+                        <button onClick={() => deletePoint(point.id)} className="ml-2 text-slate-300 hover:text-red-500"><Icon name="Trash2" size={16} /></button>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-4 gap-2 bg-slate-900 p-2 rounded-lg">
+                      {enabledViewTypes.map(vt => (
+                        <div key={vt.id} className="aspect-[4/3] bg-black/40 rounded flex items-center justify-center overflow-hidden relative border border-white/5">
+                          {dirData[vt.id] ? <img src={dirData[vt.id]!.url} className="max-h-full max-w-full object-contain" /> : <Icon name="Camera" size={24} className="text-white/10" />}
+                          <span className="absolute top-1 left-1 text-[8px] text-white bg-black/50 px-1 rounded font-bold uppercase">{vt.label}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
+          </div>
+        )}
+
+        {/* === プレビュータブ === */}
+        {activeTab === 'preview' && (
+          <div className="h-full overflow-y-auto p-8 bg-slate-300/50 flex flex-col items-center gap-6 print:p-0 print:bg-white print:block">
+            <button onClick={() => window.print()} className="no-print bg-slate-900 text-white px-10 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg hover:bg-slate-800 transition">
+              <Icon name="Printer" size={18} /> 印刷画面を開く
+            </button>
+            <div className="a4-page-container print:block">
+              {chunkedPoints.map((pagePoints, pi) => (
+                <div key={pi} className="a4-sheet bg-white shadow-2xl flex flex-col print:shadow-none mb-8 print:mb-0">
+                  <div className="border-b-2 border-black pb-1 flex justify-between items-baseline mb-4 shrink-0">
+                    <h1 className="text-xl font-black">{displayLedgerName || "境界点写真台帳"}</h1>
+                    <span className="text-xs font-bold">現場名: {ledgerSettings.siteName || "---"}</span>
+                  </div>
+                  <div className="flex-1 space-y-2 min-h-0">
+                    {pagePoints.map(p => {
+                      const dirData = p.directions[p.selectedDirection] || {};
+                      const representative = Object.values(dirData)[0];
+                      return (
+                        <div key={p.id} className={`point-card-box border border-black flex flex-col overflow-hidden ${itemsPerPage === 1 ? 'h-[230mm]' : itemsPerPage === 2 ? 'h-[110mm]' : 'h-[75mm]'}`}>
+                          <div className="bg-slate-50 px-3 py-1 border-b border-black flex justify-between items-center shrink-0">
+                            <div className="flex items-center gap-6">
+                              <span className="text-sm font-black">点名: {p.pointName || "---"}</span>
+                              <span className="text-xs font-bold">標識: {p.markType}</span>
+                            </div>
+                            {showDate && representative && <div className="text-[9px] font-bold text-slate-500">撮影日: {representative.lastModified}</div>}
+                          </div>
+                          <div className="p-1 flex-1 grid gap-1 min-h-0 overflow-hidden" style={{ gridTemplateColumns: `repeat(${enabledViewTypes.length === 1 ? 1 : 2}, minmax(0, 1fr))` }}>
+                            {enabledViewTypes.map(vt => (
+                              <div key={vt.id} className="border border-black flex flex-col overflow-hidden bg-white">
+                                <div className="flex-1 flex items-center justify-center overflow-hidden">
+                                  {dirData[vt.id] ? <img src={dirData[vt.id]!.url} className="max-h-full max-w-full object-contain" /> : null}
+                                </div>
+                                <div className="text-[8px] text-center bg-slate-50 border-t border-black font-black uppercase tracking-widest">{vt.label}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="text-[9px] text-right mt-2 text-slate-400 font-bold shrink-0">{pi + 1} / {chunkedPoints.length} ページ</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
   );
 }
