@@ -369,35 +369,35 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {/* 基本設定 */}
               <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
-                <h2 className="text-[10px] font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Settings2" size={14} />基本設定</h2>
-                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Gemini APIキー" className="w-full bg-slate-50 border rounded-lg px-2 py-1.5 text-xs font-bold" />
-                <select value={ledgerSettings.ledgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, ledgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-xs font-bold">
+                <h2 className="text-xs font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Settings2" size={14} />基本設定</h2>
+                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Gemini APIキー" className="w-full bg-slate-50 border rounded-lg px-2 py-1.5 text-sm font-bold" />
+                <select value={ledgerSettings.ledgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, ledgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm font-bold">
                   {DEFAULT_LEDGER_TYPES.map(t => <option key={t}>{t}</option>)}<option>その他</option>
                 </select>
-                {ledgerSettings.ledgerType === "その他" && <input type="text" value={ledgerSettings.customLedgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, customLedgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-xs font-bold" placeholder="台帳名を入力" />}
-                <input type="text" value={ledgerSettings.siteName} onChange={e => setLedgerSettings({ ...ledgerSettings, siteName: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-xs font-bold" placeholder="現場名称" />
+                {ledgerSettings.ledgerType === "その他" && <input type="text" value={ledgerSettings.customLedgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, customLedgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm font-bold" placeholder="台帳名を入力" />}
+                <input type="text" value={ledgerSettings.siteName} onChange={e => setLedgerSettings({ ...ledgerSettings, siteName: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm font-bold" placeholder="現場名称" />
                 <div className="mt-4 pt-4 border-t">
-                  <label className="text-[9px] font-bold text-slate-400 block mb-2">標識リスト</label>
+                  <label className="text-xs font-bold text-slate-400 block mb-2">標識リスト</label>
                   <div className="flex gap-1 mb-2">
-                    <input type="text" value={newMarkType} onChange={e => setNewMarkType(e.target.value)} placeholder="追加" className="flex-1 bg-slate-50 border rounded px-2 py-1 text-xs font-bold" />
-                    <button onClick={handleAddMarkType} className="bg-blue-600 text-white px-2 rounded text-[10px] font-bold">追加</button>
+                    <input type="text" value={newMarkType} onChange={e => setNewMarkType(e.target.value)} placeholder="追加" className="flex-1 bg-slate-50 border rounded px-2 py-1 text-sm font-bold" />
+                    <button onClick={handleAddMarkType} className="bg-blue-600 text-white px-2 rounded text-xs font-bold">追加</button>
                   </div>
                   <div className="flex flex-wrap gap-1">
-                    {markTypes.map(t => <span key={t} className="px-2 py-0.5 bg-slate-100 border rounded text-[9px] font-bold flex items-center gap-1">{t}<button onClick={() => handleDeleteMarkType(t)}><Icon name="X" size={10} /></button></span>)}
+                    {markTypes.map(t => <span key={t} className="px-2 py-0.5 bg-slate-100 border rounded text-xs font-bold flex items-center gap-1">{t}<button onClick={() => handleDeleteMarkType(t)}><Icon name="X" size={10} /></button></span>)}
                   </div>
                 </div>
               </div>
               {/* 画質設定 */}
               <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
-                <h2 className="text-[10px] font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Image" size={14} />画質設定</h2>
-                {(Object.entries(COMPRESSION_MODES) as [CompressionModeKey, typeof COMPRESSION_MODES[CompressionModeKey]][]).map(([k, v]) => <button key={k} onClick={() => setCompressionMode(k)} className={`w-full text-left p-2 rounded-lg border text-[10px] font-bold transition ${compressionMode === k ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 border-slate-200'}`}>{v.label}</button>)}
+                <h2 className="text-xs font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Image" size={14} />画質設定</h2>
+                {(Object.entries(COMPRESSION_MODES) as [CompressionModeKey, typeof COMPRESSION_MODES[CompressionModeKey]][]).map(([k, v]) => <button key={k} onClick={() => setCompressionMode(k)} className={`w-full text-left p-2 rounded-lg border text-sm font-bold transition ${compressionMode === k ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 border-slate-200'}`}>{v.label}</button>)}
               </div>
               {/* 表示設定 */}
               <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
-                <h2 className="text-[10px] font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="LayoutGrid" size={14} />表示設定</h2>
-                <div className="flex gap-2">{[1, 2, 3].map(n => <button key={n} onClick={() => setItemsPerPage(n)} className={`flex-1 py-1 rounded-lg border text-[10px] font-bold ${itemsPerPage === n ? 'bg-blue-600 text-white' : 'bg-slate-50'}`}>{n}点/頁</button>)}</div>
-                <button onClick={() => setShowDate(!showDate)} className={`w-full py-1.5 rounded-lg text-[10px] font-bold border flex items-center justify-center gap-2 transition ${showDate ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-400'}`}><Icon name="Calendar" size={12} /> 撮影日: {showDate ? 'ON' : 'OFF'}</button>
-                <div className="grid grid-cols-2 gap-2 mt-2">{VIEW_TYPES.map(vt => <button key={vt.id} onClick={() => setViewVisibility(v => ({ ...v, [vt.id]: !v[vt.id] }))} className={`px-2 py-1 border rounded text-[9px] font-bold flex justify-between items-center transition ${viewVisibility[vt.id] ? 'border-blue-300 bg-blue-50 text-blue-700' : 'text-slate-400 bg-slate-50'}`}>{vt.label}<span>{viewVisibility[vt.id] ? '●' : '○'}</span></button>)}</div>
+                <h2 className="text-xs font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="LayoutGrid" size={14} />表示設定</h2>
+                <div className="flex gap-2">{[1, 2, 3].map(n => <button key={n} onClick={() => setItemsPerPage(n)} className={`flex-1 py-1 rounded-lg border text-sm font-bold ${itemsPerPage === n ? 'bg-blue-600 text-white' : 'bg-slate-50'}`}>{n}点/頁</button>)}</div>
+                <button onClick={() => setShowDate(!showDate)} className={`w-full py-1.5 rounded-lg text-sm font-bold border flex items-center justify-center gap-2 transition ${showDate ? 'bg-blue-50 text-blue-600' : 'bg-slate-50 text-slate-400'}`}><Icon name="Calendar" size={12} /> 撮影日: {showDate ? 'ON' : 'OFF'}</button>
+                <div className="grid grid-cols-2 gap-2 mt-2">{VIEW_TYPES.map(vt => <button key={vt.id} onClick={() => setViewVisibility(v => ({ ...v, [vt.id]: !v[vt.id] }))} className={`px-2 py-1 border rounded text-sm font-bold flex justify-between items-center transition ${viewVisibility[vt.id] ? 'border-blue-300 bg-blue-50 text-blue-700' : 'text-slate-400 bg-slate-50'}`}>{vt.label}<span>{viewVisibility[vt.id] ? '●' : '○'}</span></button>)}</div>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-6">
@@ -515,7 +515,7 @@ export default function App() {
                                 <div className="flex-1 flex items-center justify-center overflow-hidden">
                                   {dirData[vt.id] ? <img src={dirData[vt.id]!.url} className="max-h-full max-w-full object-contain" /> : null}
                                 </div>
-                                <div className="text-[8px] text-center bg-slate-50 border-t border-black font-black uppercase tracking-widest">{vt.label}</div>
+                                <div className="text-xs text-center bg-slate-50 border-t border-black font-black uppercase tracking-widest py-0.5">{vt.label}</div>
                               </div>
                             ))}
                           </div>
