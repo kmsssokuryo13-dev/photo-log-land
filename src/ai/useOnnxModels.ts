@@ -46,6 +46,8 @@ export function useOnnxModels(): OnnxModels {
   const [status, setStatus] = useState<EngineStatus>({ kind: 'loading' });
   const [persistent, setPersistent] = useState(true);
   const [busy, setBusy] = useState(false);
+  // 起動時の使用中モデル読込。読込中に来た推論はこれを待つ
+  const initRef = useRef<Promise<void> | null>(null);
 
   const swapClassifier = useCallback((next: { id: string; classifier: OnnxClassifier } | null) => {
     const prev = classifierRef.current;
@@ -64,7 +66,7 @@ export function useOnnxModels(): OnnxModels {
   // 起動時：登録済みモデルと使用中モデルを読み込む
   useEffect(() => {
     let cancelled = false;
-    (async () => {
+    initRef.current = (async () => {
       try {
         const store = await openModelStore();
         if (cancelled) return;
@@ -209,6 +211,7 @@ export function useOnnxModels(): OnnxModels {
   }, [swapClassifier]);
 
   const classify = useCallback<OnnxModels['classify']>(async (file) => {
+    if (!classifierRef.current && initRef.current) await initRef.current.catch(() => undefined);
     const current = classifierRef.current;
     if (!current) return null;
     const label = modelLabel(current.classifier.config);

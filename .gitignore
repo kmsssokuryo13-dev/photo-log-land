@@ -26,5 +26,5 @@ dist-ssr
 # PC内AI：モデル本体・実務写真はコミットしない
 *.onnx
 *.onnx.data
-models/
-private/
+/models/
+/private/

@@ -253,6 +253,8 @@ export default function App() {
         const idx = updated.findIndex(p => p.pointName === data.baseName);
         if (idx > -1) {
           if (!updated[idx].directions[data.direction]) updated[idx].directions[data.direction] = {};
+          const replaced = updated[idx].directions[data.direction][data.viewType];
+          if (replaced && replaced.id !== data.id) originalFilesRef.current.delete(replaced.id);
           updated[idx].directions[data.direction][data.viewType] = data;
         } else {
           updated.push({
@@ -503,7 +505,7 @@ export default function App() {
                             <button onClick={() => identifyMarkWithAI(point.id)} disabled={isAiWorking || point.markType === "計算点"} className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${isAiWorking ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50 disabled:opacity-30'}`}>
                               {isAiWorking ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Icon name="Sparkles" size={14} />}
                             </button>
-                            {point.markType !== "計算点" && <PredictionBadge prediction={predictionForPoint(point)} markTypes={markTypes} />}
+                            {point.markType !== "計算点" && <PredictionBadge prediction={predictionForPoint(point)} markTypes={markTypes} activeModelId={ai.activeId} />}
                           </div>
                         </div>
                       </div>
