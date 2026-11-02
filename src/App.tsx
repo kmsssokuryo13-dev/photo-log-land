@@ -6,6 +6,10 @@ import {
   Calendar, Printer
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { useOnnxModels, type OnnxPrediction } from './ai/useOnnxModels';
+import { ModelManager } from './ai/ModelManager';
+import { PredictionBadge } from './ai/PredictionBadge';
+import { aiTargetFiles, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
 
 // --- 定数 ---
 
@@ -37,6 +41,7 @@ interface FileData {
   direction: number;
   url: string;
   lastModified: string;
+  onnx?: OnnxPrediction; // PC内AIの候補（表示のみ。標識は変更しない）
 }
 
 interface BoundaryPoint {
@@ -160,6 +165,10 @@ function parseFileName(fileName: string): { baseName: string; viewType: ViewId; 
   return { baseName, viewType, direction };
 }
 
+function newFileId(): string {
+  return Math.random().toString(36).substr(2, 9);
+}
+
 // --- メインアプリケーション ---
 
 export default function App() {
@@ -185,6 +194,11 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState("");
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
   const [newMarkType, setNewMarkType] = useState("");
+
+  // PC内AI（ONNX）。判別し直せるよう、近景写真の元ファイル（圧縮前）への参照を保持する
+  const ai = useOnnxModels();
+  const originalFilesRef = useRef(new Map<string, File>());
+  const [reclassifying, setReclassifying] = useState(false);
 
   // localStorage sync
   useEffect(() => setStorageItem('apiKey', apiKey), [apiKey]);
@@ -217,11 +231,19 @@ export default function App() {
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const { baseName, viewType, direction } = parseFileName(file.name);
+      const id = newFileId();
+      // 近景のみ、圧縮前の元画像でPC内AI判別（失敗しても読込は続行）
+      let onnx: OnnxPrediction | undefined;
+      if (isAiTargetView(viewType)) {
+        originalFilesRef.current.set(id, file);
+        onnx = (await ai.classify(file).catch(() => null)) ?? undefined;
+      }
       const compressedUrl = await compressImage(file, compressionMode);
       newFileData.push({
-        id: Math.random().toString(36).substr(2, 9),
+        id,
         fileName: file.name, baseName, viewType, direction, url: compressedUrl,
-        lastModified: new Date(file.lastModified).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' })
+        lastModified: new Date(file.lastModified).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+        onnx
       });
       setProcessingProgress(prev => ({ ...prev, current: i + 1 }));
     }
@@ -245,6 +267,24 @@ export default function App() {
     });
     setIsProcessing(false);
     if (newFileData.length > 0) setActiveTab('edit');
+  };
+
+  // 近景写真は読込時に元ファイルを保持している（再判別の対象）
+  const reclassifyTargets = aiTargetFiles(points);
+
+  const reclassifyAll = async () => {
+    if (reclassifying) return;
+    setReclassifying(true);
+    try {
+      for (const fd of reclassifyTargets) {
+        const file = originalFilesRef.current.get(fd.id);
+        if (!file) continue;
+        const prediction = (await ai.classify(file).catch(() => null)) ?? undefined;
+        setPoints(prev => applyPrediction(prev, fd.id, prediction));
+      }
+    } finally {
+      setReclassifying(false);
+    }
   };
 
   const addCalculationPoint = () => {
@@ -312,7 +352,11 @@ export default function App() {
   };
 
   const updatePoint = (id: string, updates: Partial<BoundaryPoint>) => setPoints(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
-  const deletePoint = (id: string) => setPoints(prev => prev.filter(p => p.id !== id));
+  const deletePoint = (id: string) => {
+    const target = points.find(p => p.id === id);
+    if (target) aiTargetFiles([target]).forEach(fd => originalFilesRef.current.delete(fd.id));
+    setPoints(prev => prev.filter(p => p.id !== id));
+  };
 
   const chunkedPoints = useMemo(() => {
     const chunks: BoundaryPoint[][] = [];
@@ -400,6 +444,7 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-2 mt-2">{VIEW_TYPES.map(vt => <button key={vt.id} onClick={() => setViewVisibility(v => ({ ...v, [vt.id]: !v[vt.id] }))} className={`px-2 py-1 border rounded text-sm font-bold flex justify-between items-center transition ${viewVisibility[vt.id] ? 'border-blue-300 bg-blue-50 text-blue-700' : 'text-slate-400 bg-slate-50'}`}>{vt.label}<span>{viewVisibility[vt.id] ? '●' : '○'}</span></button>)}</div>
               </div>
             </div>
+            <ModelManager ai={ai} onReclassify={reclassifyAll} reclassifyCount={reclassifyTargets.length} reclassifying={reclassifying} />
             <div className="grid grid-cols-2 gap-6">
               <label className="flex flex-col items-center justify-center border-4 border-dashed border-slate-200 bg-white rounded-3xl p-12 cursor-pointer hover:border-blue-400 group transition">
                 <Icon name="Upload" size={48} className="text-slate-200 mb-2 group-hover:text-blue-200" />
@@ -458,6 +503,7 @@ export default function App() {
                             <button onClick={() => identifyMarkWithAI(point.id)} disabled={isAiWorking || point.markType === "計算点"} className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${isAiWorking ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50 disabled:opacity-30'}`}>
                               {isAiWorking ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Icon name="Sparkles" size={14} />}
                             </button>
+                            {point.markType !== "計算点" && <PredictionBadge prediction={predictionForPoint(point)} markTypes={markTypes} />}
                           </div>
                         </div>
                       </div>

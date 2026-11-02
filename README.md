@@ -10,6 +10,7 @@
 - **写真の回転**: 90度回転に対応
 - **PDF出力**: A4用紙に最適化された印刷レイアウトで出力
 - **画像圧縮**: アップロード時に自動圧縮（最大1200px、品質80%）
+- **PC内AI（ONNX）**: 近景写真の境界標識をブラウザ内で推論し、候補と確信度を表示（標識は手動で選択）。詳しくは [docs/onnx-model.md](docs/onnx-model.md)
 
 ## セットアップ
 
@@ -18,10 +19,12 @@ npm install
 npm run dev
 ```
 
-## ビルド
+## ビルド・確認
 
 ```bash
 npm run build
+npm run lint
+npm test
 ```
 
 ## 技術スタック
@@ -31,3 +34,4 @@ npm run build
 - Tailwind CSS v4
 - @dnd-kit（ドラッグ＆ドロップ）
 - Lucide React（アイコン）
+- onnxruntime-web（PC内AI、WASM / CPU）
