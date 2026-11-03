@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# PC内AI：モデル本体・実務写真はコミットしない
+*.onnx
+*.onnx.data
+/models/
+/private/
