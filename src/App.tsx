@@ -3,13 +3,14 @@ import type { DragEvent, ChangeEvent } from 'react';
 import {
   Camera, Settings2, Image, LayoutGrid, Upload, FolderOpen,
   PlusCircle, GripVertical, Sparkles, Trash2, X, AlertCircle,
-  Calendar, Printer
+  Calendar, Printer, Send
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useOnnxModels, type OnnxPrediction } from './ai/useOnnxModels';
 import { ModelManager } from './ai/ModelManager';
 import { PredictionBadge } from './ai/PredictionBadge';
 import { aiTargetFiles, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
+import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaRef } from './utils/surviaHandoff';
 
 // --- 定数 ---
 
@@ -41,6 +42,7 @@ interface FileData {
   direction: number;
   url: string;
   lastModified: string;
+  modifiedMs?: number; // 撮影日（ファイルの更新日時）。SURVIA へ戻すときに使う
   onnx?: OnnxPrediction; // PC内AIの候補（表示のみ。標識は変更しない）
 }
 
@@ -66,7 +68,7 @@ type ViewVisibility = Record<ViewId, boolean>;
 const ICON_MAP: Record<string, LucideIcon> = {
   Camera, Settings2, Image, LayoutGrid, Upload, FolderOpen,
   PlusCircle, GripVertical, Sparkles, Trash2, X, AlertCircle,
-  Calendar, Printer
+  Calendar, Printer, Send
 };
 
 function Icon({ name, size = 20, className = "" }: { name: string; size?: number; className?: string }) {
@@ -223,7 +225,11 @@ export default function App() {
   };
 
   const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files || []);
+    await addFiles(Array.from(event.target.files || []));
+  };
+
+  /** 写真を読み込む（ファイル選択・フォルダ読込・SURVIA から）。marks は SURVIA の境界標（標識が未設定の点に入れる）。 */
+  const addFiles = async (files: File[], marks: { name: string; markType: string }[] = []) => {
     if (files.length === 0) return;
     setIsProcessing(true);
     setProcessingProgress({ current: 0, total: files.length });
@@ -243,6 +249,7 @@ export default function App() {
         id,
         fileName: file.name, baseName, viewType, direction, url: compressedUrl,
         lastModified: new Date(file.lastModified).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+        modifiedMs: file.lastModified,
         onnx
       });
       setProcessingProgress(prev => ({ ...prev, current: i + 1 }));
@@ -265,10 +272,62 @@ export default function App() {
           });
         }
       });
-      return updated;
+      // SURVIA の境界標（同じ点名で、標識が未設定の点だけ）
+      return updated.map(p => {
+        const m = marks.find(x => x.markType && x.name.normalize('NFKC').trim() === p.pointName.normalize('NFKC').trim());
+        return m && p.markType === "未設定" ? { ...p, markType: m.markType } : p;
+      });
     });
     setIsProcessing(false);
     if (newFileData.length > 0) setActiveTab('edit');
+  };
+
+  // SURVIA から開かれたとき: 写真・現場名・境界標を受け取る（1回だけ。受け渡し口の場所はすぐ URL から消す）
+  const [survia] = useState<SurviaRef | null>(() => readHandoffRef(window.location.hash));
+  const [notice, setNotice] = useState("");
+  const [sending, setSending] = useState(false);
+  const surviaStarted = useRef(false);
+  useEffect(() => {
+    if (surviaStarted.current) return;
+    surviaStarted.current = true;
+    const ref = survia;
+    if (!ref) return;
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${stripHandoffRef(window.location.hash)}`);
+    void (async () => {
+      try {
+        const got = await receiveFromSurvia(ref);
+        if (got.siteName) setLedgerSettings(s => ({ ...s, siteName: got.siteName }));
+        await addFiles(got.files, got.marks);
+        setNotice(`SURVIA から写真 ${got.files.length} 枚を受け取りました`);
+      } catch (e) {
+        setErrorMessage(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    // 最初の1回だけ（addFiles は毎回作り直されるが、受け取りは1回）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** 台帳の点名・標識・撮影日（左・右の写真）を SURVIA へ戻す。 */
+  const sendToSurvia = async () => {
+    if (!survia || sending) return;
+    const [left, right] = VIEW_TYPES.filter(vt => viewVisibility[vt.id]);
+    const sent = points.filter(p => p.pointName.trim()).map(p => {
+      const dir = p.directions[p.selectedDirection] || {};
+      return {
+        name: p.pointName, markType: p.markType === "未設定" ? "" : p.markType,
+        photoDates: [isoDate(left && dir[left.id]?.modifiedMs), isoDate(right && dir[right.id]?.modifiedMs)] as [string, string],
+      };
+    });
+    setSending(true);
+    setErrorMessage("");
+    try {
+      const n = await sendMarksToSurvia(survia, sent);
+      setNotice(`SURVIA へ ${n} 点を戻しました`);
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSending(false);
+    }
   };
 
   // 近景写真は読込時に元ファイルを保持している（再判別の対象）
@@ -382,6 +441,13 @@ export default function App() {
         </div>
       )}
 
+      {notice && (
+        <div className="no-print fixed top-16 left-1/2 -translate-x-1/2 z-[100] bg-blue-600 text-white px-6 py-3 rounded-2xl shadow-xl flex items-center gap-3" role="status">
+          <span className="text-sm font-bold">{notice}</span>
+          <button onClick={() => setNotice("")} className="hover:bg-blue-700 p-1 rounded">×</button>
+        </div>
+      )}
+
       <header className="bg-white border-b border-slate-200 px-6 py-2 flex items-center justify-between no-print shrink-0">
         <div className="flex items-center gap-2">
           <div className="bg-blue-600 p-1 rounded-lg"><Icon name="Camera" size={18} className="text-white" /></div>
@@ -394,9 +460,16 @@ export default function App() {
             </button>
           ))}
         </nav>
+        <div className="flex items-center gap-2">
+        {survia && (
+          <button onClick={sendToSurvia} disabled={sending || points.length === 0} title="点名・標識・撮影日を SURVIA へ" className="bg-blue-600 text-white px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-blue-700 flex items-center gap-2 disabled:opacity-50">
+            <Icon name="Send" size={14} /> SURVIAへ戻す
+          </button>
+        )}
         <button onClick={identifyAllWithAI} disabled={points.length === 0 || aiProcessingIds.size > 0} className="bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 flex items-center gap-2 disabled:opacity-50">
           <Icon name="Sparkles" size={14} className={aiProcessingIds.size > 0 ? "animate-spin" : ""} /> 一括AI判別
         </button>
+        </div>
       </header>
 
       <main className="flex-1 overflow-hidden print:overflow-visible print:block relative">
