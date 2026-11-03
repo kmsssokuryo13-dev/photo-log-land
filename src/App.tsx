@@ -285,6 +285,12 @@ export default function App() {
   // SURVIA から開かれたとき: 写真・現場名・境界標を受け取る（1回だけ。受け渡し口の場所はすぐ URL から消す）
   const [survia] = useState<SurviaRef | null>(() => readHandoffRef(window.location.hash));
   const [notice, setNotice] = useState("");
+  // 知らせは数秒で消す（プレビューの印刷ボタンに重ならないように）
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
   const [sending, setSending] = useState(false);
   const surviaStarted = useRef(false);
   useEffect(() => {
@@ -574,6 +580,7 @@ export default function App() {
                             <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value })} className="border rounded px-2 py-1 text-xs font-bold bg-slate-50 h-8">
                               <option value="未設定">未設定</option>
                               {markTypes.map(t => <option key={t}>{t}</option>)}
+                              {point.markType !== "未設定" && !markTypes.includes(point.markType) && <option key={point.markType}>{point.markType}</option>}
                             </select>
                             <button onClick={() => identifyMarkWithAI(point.id)} disabled={isAiWorking || point.markType === "計算点"} className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${isAiWorking ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50 disabled:opacity-30'}`}>
                               {isAiWorking ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Icon name="Sparkles" size={14} />}
