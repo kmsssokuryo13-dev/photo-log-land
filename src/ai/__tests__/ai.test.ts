@@ -18,8 +18,9 @@ describe('parseModelConfig', () => {
     });
     expect(c.output.type).toBe('probabilities');
     expect(c.topK).toBe(3);
-    expect(c.autoFillConfidence).toBeNull(); // 書いていなければ自動入力しない
-    expect(parseModelConfig({ ...base, auto_fill_confidence: 0.9 }).autoFillConfidence).toBe(0.9);
+    expect(c.autoFillConfidence).toBe(0.9); // 書いていなければ 0.9
+    expect(parseModelConfig({ ...base, auto_fill_confidence: 0.75 }).autoFillConfidence).toBe(0.75);
+    expect(parseModelConfig({ ...base, auto_fill_confidence: null }).autoFillConfidence).toBeNull(); // null は自動入力しない
   });
 
   it('設定ファイルの入力サイズ・前処理・表示名に従う', () => {

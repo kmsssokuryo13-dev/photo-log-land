@@ -2,7 +2,7 @@
 // どの処理も例外を外へ投げず、失敗時は AI なし（手動運用）で写真台帳作成を続けられるようにする。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { diffClasses, parseModelConfig, type ModelConfig } from './modelConfig';
+import { DEFAULT_AUTO_FILL_CONFIDENCE, diffClasses, parseModelConfig, type ModelConfig } from './modelConfig';
 import { openModelStore, type ModelMeta, type ModelStore } from './modelStore';
 import { errorText, OnnxClassifier } from './onnxClassifier';
 import type { Candidate } from './postprocess';
@@ -219,7 +219,7 @@ export function useOnnxModels(): OnnxModels {
     const label = modelLabel(current.classifier.config);
     try {
       const candidates = await current.classifier.classify(file);
-      return { status: 'ok', modelId: current.id, modelLabel: label, candidates, minConfidence: current.classifier.config.minConfidence, autoFillConfidence: current.classifier.config.autoFillConfidence ?? null };
+      return { status: 'ok', modelId: current.id, modelLabel: label, candidates, minConfidence: current.classifier.config.minConfidence, autoFillConfidence: current.classifier.config.autoFillConfidence === undefined ? DEFAULT_AUTO_FILL_CONFIDENCE : current.classifier.config.autoFillConfidence };
     } catch (e) {
       return { status: 'error', modelId: current.id, modelLabel: label, message: errorText(e) };
     }

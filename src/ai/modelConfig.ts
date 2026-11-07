@@ -34,6 +34,9 @@ export interface ModelConfig {
   autoFillConfidence: number | null;
 }
 
+/** auto_fill_confidence を書いていないときのしきい値（2026-11-07 ユーザー決定）。null を書くと自動入力しない */
+export const DEFAULT_AUTO_FILL_CONFIDENCE = 0.9;
+
 export class ModelConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -158,7 +161,7 @@ export function parseModelConfig(raw: unknown): ModelConfig {
   const minConfidence = num(pick(raw, 'min_confidence', 'minConfidence'), 'min_confidence', 0);
   if (minConfidence < 0 || minConfidence > 1) throw new ModelConfigError('min_confidence は 0〜1 で指定してください');
   const rawAutoFill = pick(raw, 'auto_fill_confidence', 'autoFillConfidence');
-  let autoFillConfidence: number | null = null;
+  let autoFillConfidence: number | null = rawAutoFill === null ? null : DEFAULT_AUTO_FILL_CONFIDENCE;
   if (rawAutoFill !== undefined && rawAutoFill !== null) {
     autoFillConfidence = num(rawAutoFill, 'auto_fill_confidence', 0);
     if (autoFillConfidence <= 0 || autoFillConfidence > 1) throw new ModelConfigError('auto_fill_confidence は 0 より大きく 1 以下で指定してください');
