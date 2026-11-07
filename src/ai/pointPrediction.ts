@@ -1,4 +1,4 @@
-// 写真（FileData）へのAI候補の付与。標識(markType)などの手動入力には一切触れない。
+// 写真（FileData）へのAI候補の付与と、確信度しきい値での標識の自動入力。
 
 import type { OnnxPrediction } from './useOnnxModels';
 
@@ -64,4 +64,56 @@ export function aiTargetFiles<F extends FileLike>(points: PointLike<F>[]): F[] {
     }
   }
   return out;
+}
+
+// --- 自動入力 ---
+
+/** 自動入力しない種類（候補は表示のみ） */
+export const NO_AUTO_FILL = ['計算点'];
+export const UNSET_MARK = '未設定';
+
+/**
+ * 候補から自動入力してよい標識名。使えなければ null。
+ * しきい値（auto_fill_confidence）が設定されたモデルの、使用中モデルの結果で、
+ * 1位が標識リストにあり計算点でなく、しきい値（と min_confidence）以上のときだけ。
+ */
+export function autoFillMark(prediction: OnnxPrediction | undefined, markTypes: string[], activeModelId: string | null): string | null {
+  if (!prediction || prediction.status !== 'ok' || prediction.modelId !== activeModelId) return null;
+  const threshold = prediction.autoFillConfidence ?? null;
+  const top = prediction.candidates[0];
+  if (threshold === null || !top) return null;
+  if (top.score < threshold || top.score < prediction.minConfidence) return null;
+  if (!markTypes.includes(top.label) || NO_AUTO_FILL.includes(top.label)) return null;
+  return top.label;
+}
+
+interface AutoFillPoint<F extends FileLike> extends PointLike<F> {
+  markType: string;
+  markSource?: 'ai';
+}
+
+/**
+ * 「未設定」の点に AI の標識を入れ、印（markSource: 'ai'）を付ける。
+ * すでに AI が入れた点（手で変えていない点）は今の結果で入れ直し、使えなければ「未設定」に戻す。
+ * 手で選んだ標識・SURVIA から来た標識・計算点には触れない。
+ * 判別できなかった写真（status:'error'）も「使えない」扱いで「未設定」に戻す。
+ */
+export function applyAutoFill<F extends FileLike, P extends AutoFillPoint<F>>(points: P[], markTypes: string[], activeModelId: string | null): P[] {
+  let changed = false;
+  const next = points.map(p => {
+    if (p.markType !== UNSET_MARK && p.markSource !== 'ai') return p;
+    const prediction = predictionForPoint(p);
+    // 使用中モデルの結果が無い（旧モデルの結果・近景なし）間は、AI が入れた標識もそのまま
+    if (p.markSource === 'ai' && prediction?.modelId !== activeModelId) return p;
+    const mark = autoFillMark(prediction, markTypes, activeModelId);
+    if (mark) {
+      if (p.markType === mark && p.markSource === 'ai') return p;
+      changed = true;
+      return { ...p, markType: mark, markSource: 'ai' as const };
+    }
+    if (p.markSource !== 'ai') return p;
+    changed = true;
+    return { ...p, markType: UNSET_MARK, markSource: undefined };
+  });
+  return changed ? next : points;
 }

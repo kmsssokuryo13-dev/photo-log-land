@@ -25,4 +25,4 @@ SURVIA の設定「土地写真台帳」でこのフォルダを選ぶと、
 - 土地写真台帳かどうかは `index.html` の `<meta name="app-id" content="photo-log-land">` で確かめます。
 - `node_modules` が `package-lock.json` より古ければ build の前に `npm install`、`dist` が build 入力より新しければ build を省きます。
 - server は `vite preview --host localhost --port 5178 --strictPort` を `node` から直接起動し、状態は `%LOCALAPPDATA%\photo-log-land-launcher\state.json` に残します。
-- 設定（APIキー・標識リストなど）と PC内AI のモデルはブラウザの場所ごとに保存されます。GitHub Pages で使っていた場合は、`http://localhost:5178/` で最初に1回だけ入れ直してください。
+- 設定（標識リストなど）と PC内AI のモデルはブラウザの場所ごとに保存されます。GitHub Pages で使っていた場合は、`http://localhost:5178/` で最初に1回だけ入れ直してください。

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { diffClasses, parseModelConfig, ModelConfigError } from '../modelConfig';
 import { computeDrawRect, rgbaToNchw } from '../preprocess';
 import { softmax, toCandidates } from '../postprocess';
-import { aiTargetFiles, applyPrediction, isAiTargetView, predictionForPoint } from '../pointPrediction';
+import { aiTargetFiles, applyAutoFill, applyPrediction, autoFillMark, isAiTargetView, predictionForPoint } from '../pointPrediction';
 import { MemoryModelStore } from '../modelStore';
 import type { OnnxPrediction } from '../useOnnxModels';
 
@@ -18,6 +18,9 @@ describe('parseModelConfig', () => {
     });
     expect(c.output.type).toBe('probabilities');
     expect(c.topK).toBe(3);
+    expect(c.autoFillConfidence).toBe(0.9); // 書いていなければ 0.9
+    expect(parseModelConfig({ ...base, auto_fill_confidence: 0.75 }).autoFillConfidence).toBe(0.75);
+    expect(parseModelConfig({ ...base, auto_fill_confidence: null }).autoFillConfidence).toBeNull(); // null は自動入力しない
   });
 
   it('設定ファイルの入力サイズ・前処理・表示名に従う', () => {
@@ -51,6 +54,9 @@ describe('parseModelConfig', () => {
     [{ ...base, display_names: { unknown: 'x' } }],
     [{ model_version: '1', names: { 0: 'a', 2: 'b' } }],
     [{ ...base, min_confidence: 2 }],
+    [{ ...base, auto_fill_confidence: 0 }],
+    [{ ...base, auto_fill_confidence: 1.5 }],
+    [{ ...base, auto_fill_confidence: '0.9' }],
   ])('不正な設定は拒否する %#', (raw) => {
     expect(() => parseModelConfig(raw)).toThrow(ModelConfigError);
   });
@@ -117,7 +123,7 @@ describe('toCandidates', () => {
 
 describe('AI候補は手動確定を上書きしない', () => {
   type F = { id: string; viewType: string; url: string; onnx?: OnnxPrediction };
-  const pred: OnnxPrediction = { status: 'ok', modelId: 'm', modelLabel: 'm 1', minConfidence: 0, candidates: [{ cls: 'a', label: '金属鋲', score: 0.9 }] };
+  const pred: OnnxPrediction = { status: 'ok', modelId: 'm', modelLabel: 'm 1', minConfidence: 0, autoFillConfidence: null, candidates: [{ cls: 'a', label: '金属鋲', score: 0.9 }] };
   const make = () => [
     { id: 'p1', pointName: 'K1', markType: 'コンクリート杭', selectedDirection: 1, notes: '',
       directions: { 1: { far: { id: 'f1', viewType: 'far', url: 'x' } as F, close: { id: 'f2', viewType: 'close', url: 'y' } as F } } },
@@ -145,6 +151,58 @@ describe('AI候補は手動確定を上書きしない', () => {
   it('該当写真がなければ同じ配列を返す', () => {
     const before = make();
     expect(applyPrediction(before, 'nope', pred)).toBe(before);
+  });
+});
+
+describe('確信度しきい値での自動入力', () => {
+  type F = { id: string; viewType: string; onnx?: OnnxPrediction };
+  const marks = ['金属鋲', 'コンクリート杭', '計算点'];
+  const ok = (label: string, score: number, opts: Partial<{ modelId: string; auto: number | null; min: number }> = {}): OnnxPrediction => ({
+    status: 'ok', modelId: opts.modelId ?? 'm', modelLabel: 'm 1', minConfidence: opts.min ?? 0,
+    autoFillConfidence: opts.auto === undefined ? 0.8 : opts.auto,
+    candidates: [{ cls: label, label, score }, { cls: 'x', label: '金属鋲', score: 1 - score }],
+  });
+  const point = (markType: string, onnx?: OnnxPrediction, markSource?: 'ai') => ({
+    id: 'p', pointName: 'K1', markType, markSource, selectedDirection: 1, notes: '',
+    directions: { 1: { close: { id: 'f', viewType: 'close', onnx } as F } },
+  });
+
+  it('しきい値以上・リスト内・計算点以外・使用中モデルだけ入れる', () => {
+    expect(autoFillMark(ok('コンクリート杭', 0.85), marks, 'm')).toBe('コンクリート杭');
+    expect(autoFillMark(ok('コンクリート杭', 0.8), marks, 'm')).toBe('コンクリート杭'); // ちょうどは入れる
+    expect(autoFillMark(ok('コンクリート杭', 0.79), marks, 'm')).toBeNull();
+    expect(autoFillMark(ok('コンクリート杭', 0.95, { auto: null }), marks, 'm')).toBeNull(); // 設定なし
+    expect(autoFillMark(ok('コンクリート杭', 0.85, { min: 0.9 }), marks, 'm')).toBeNull(); // min_confidence 未満
+    expect(autoFillMark(ok('計算点', 0.99), marks, 'm')).toBeNull();
+    expect(autoFillMark(ok('木杭', 0.99), marks, 'm')).toBeNull(); // リスト外
+    expect(autoFillMark(ok('コンクリート杭', 0.99, { modelId: 'old' }), marks, 'm')).toBeNull(); // 旧モデル
+    expect(autoFillMark({ status: 'error', modelId: 'm', modelLabel: 'm 1', message: 'x' }, marks, 'm')).toBeNull();
+    expect(autoFillMark(undefined, marks, 'm')).toBeNull();
+  });
+
+  it('「未設定」の点だけに入れて印を付ける。手入力は変えない', () => {
+    const [filled] = applyAutoFill([point('未設定', ok('コンクリート杭', 0.9))], marks, 'm');
+    expect(filled).toMatchObject({ markType: 'コンクリート杭', markSource: 'ai' });
+    const manual = [point('金属鋲', ok('コンクリート杭', 0.99))];
+    expect(applyAutoFill(manual, marks, 'm')).toBe(manual);
+    const low = [point('未設定', ok('コンクリート杭', 0.5))];
+    expect(applyAutoFill(low, marks, 'm')).toBe(low);
+  });
+
+  it('再判別では AI が入れた点だけ入れ直し、しきい値未満なら「未設定」に戻す', () => {
+    expect(applyAutoFill([point('コンクリート杭', ok('金属鋲', 0.9), 'ai')], marks, 'm')[0]).toMatchObject({ markType: '金属鋲', markSource: 'ai' });
+    const back = applyAutoFill([point('コンクリート杭', ok('金属鋲', 0.5), 'ai')], marks, 'm')[0];
+    expect(back.markType).toBe('未設定');
+    expect(back.markSource).toBeUndefined();
+    const failed = applyAutoFill([point('コンクリート杭', { status: 'error', modelId: 'm', modelLabel: 'm 1', message: 'x' }, 'ai')], marks, 'm')[0];
+    expect(failed.markType).toBe('未設定');
+  });
+
+  it('使用中モデルの結果がまだ無い間は AI の入力も残す', () => {
+    const stale = [point('コンクリート杭', ok('金属鋲', 0.2, { modelId: 'old' }), 'ai')];
+    expect(applyAutoFill(stale, marks, 'm')).toBe(stale);
+    const none = [point('コンクリート杭', undefined, 'ai')];
+    expect(applyAutoFill(none, marks, null)).toBe(none);
   });
 });
 

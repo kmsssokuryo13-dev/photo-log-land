@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef } from 'react';
 import type { DragEvent, ChangeEvent } from 'react';
 import {
   Camera, Settings2, Image, LayoutGrid, Upload, FolderOpen,
-  PlusCircle, GripVertical, Sparkles, Trash2, X, AlertCircle,
+  PlusCircle, GripVertical, Trash2, X, AlertCircle,
   Calendar, Printer, Send
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -10,7 +10,7 @@ import { useOnnxModels, type OnnxPrediction } from './ai/useOnnxModels';
 import { ModelManager } from './ai/ModelManager';
 import { PredictionBadge } from './ai/PredictionBadge';
 import { addNewDefaults, DEFAULT_MARK_TYPES } from './utils/markTypes';
-import { aiTargetFiles, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
+import { aiTargetFiles, applyAutoFill, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
 import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaRef } from './utils/surviaHandoff';
 
 // --- 定数 ---
@@ -43,13 +43,14 @@ interface FileData {
   url: string;
   lastModified: string;
   modifiedMs?: number; // 撮影日（ファイルの更新日時）。SURVIA へ戻すときに使う
-  onnx?: OnnxPrediction; // PC内AIの候補（表示のみ。標識は変更しない）
+  onnx?: OnnxPrediction; // PC内AIの候補（しきい値以上なら「未設定」の標識へ自動入力）
 }
 
 interface BoundaryPoint {
   id: string;
   pointName: string;
   markType: string;
+  markSource?: 'ai'; // AI が自動入力した標識（手で選び直すと消える）
   directions: Record<number, Partial<Record<ViewId, FileData>>>;
   selectedDirection: number;
   notes: string;
@@ -67,7 +68,7 @@ type ViewVisibility = Record<ViewId, boolean>;
 
 const ICON_MAP: Record<string, LucideIcon> = {
   Camera, Settings2, Image, LayoutGrid, Upload, FolderOpen,
-  PlusCircle, GripVertical, Sparkles, Trash2, X, AlertCircle,
+  PlusCircle, GripVertical, Trash2, X, AlertCircle,
   Calendar, Printer, Send
 };
 
@@ -88,31 +89,6 @@ function getStorageItem<T>(key: string, initialValue: T): T {
 
 function setStorageItem<T>(key: string, value: T): void {
   try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
-}
-
-async function callGemini(payload: object, currentApiKey: string, retries = 5, delay = 1000): Promise<{ candidates?: { content?: { parts?: { text?: string }[] } }[] }> {
-  if (!currentApiKey) throw new Error("APIキーが未設定です。");
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${currentApiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      }
-    );
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error((data as { error?: { message?: string } }).error?.message || "Gemini APIエラー");
-    }
-    return await response.json();
-  } catch (error) {
-    if (retries > 0 && !(error instanceof Error && (error.message.includes("403") || error.message.includes("400")))) {
-      await new Promise(r => setTimeout(r, delay));
-      return callGemini(payload, currentApiKey, retries - 1, delay * 2);
-    }
-    throw error;
-  }
 }
 
 function compressImage(file: File, mode: CompressionModeKey): Promise<string> {
@@ -180,7 +156,6 @@ export default function App() {
   const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 });
 
   // Settings with localStorage
-  const [apiKey, setApiKey] = useState(() => getStorageItem('apiKey', ''));
   const [markTypes, setMarkTypes] = useState(() => addNewDefaults(getStorageItem('markTypes', DEFAULT_MARK_TYPES), getStorageItem<string[] | null>('markTypeDefaults', null)));
   const [itemsPerPage, setItemsPerPage] = useState(() => getStorageItem('itemsPerPage', 3));
   const [showDate, setShowDate] = useState(() => getStorageItem('showDate', false));
@@ -192,7 +167,6 @@ export default function App() {
   }));
   const [viewVisibility, setViewVisibility] = useState<ViewVisibility>(() => getStorageItem('viewVisibility', { far: true, middle: false, close: true, macro: false }));
 
-  const [aiProcessingIds, setAiProcessingIds] = useState<Set<string>>(new Set());
   const [errorMessage, setErrorMessage] = useState("");
   const [draggedItemIndex, setDraggedItemIndex] = useState<number | null>(null);
   const [newMarkType, setNewMarkType] = useState("");
@@ -203,7 +177,8 @@ export default function App() {
   const [reclassifying, setReclassifying] = useState(false);
 
   // localStorage sync
-  useEffect(() => setStorageItem('apiKey', apiKey), [apiKey]);
+  // Gemini 判別は廃止（2026-11-05 ユーザー決定）。以前保存した API キーを PC に残さない
+  useEffect(() => { try { window.localStorage.removeItem('apiKey'); } catch { /* ignore */ } }, []);
   useEffect(() => setStorageItem('markTypes', markTypes), [markTypes]);
   useEffect(() => setStorageItem('markTypeDefaults', DEFAULT_MARK_TYPES), []);
   useEffect(() => setStorageItem('itemsPerPage', itemsPerPage), [itemsPerPage]);
@@ -273,11 +248,12 @@ export default function App() {
           });
         }
       });
-      // SURVIA の境界標（同じ点名で、標識が未設定の点だけ）
-      return updated.map(p => {
+      // SURVIA の境界標（同じ点名で、標識が未設定の点だけ）。AI の自動入力より優先
+      const withMarks = updated.map(p => {
         const m = marks.find(x => x.markType && x.name.normalize('NFKC').trim() === p.pointName.normalize('NFKC').trim());
         return m && p.markType === "未設定" ? { ...p, markType: m.markType } : p;
       });
+      return applyAutoFill(withMarks, markTypes, ai.currentModelId());
     });
     setIsProcessing(false);
     if (newFileData.length > 0) setActiveTab('edit');
@@ -348,7 +324,7 @@ export default function App() {
         const file = originalFilesRef.current.get(fd.id);
         if (!file) continue;
         const prediction = (await ai.classify(file).catch(() => null)) ?? undefined;
-        setPoints(prev => applyPrediction(prev, fd.id, prediction));
+        setPoints(prev => applyAutoFill(applyPrediction(prev, fd.id, prediction), markTypes, ai.currentModelId()));
       }
     } finally {
       setReclassifying(false);
@@ -365,45 +341,6 @@ export default function App() {
       notes: ""
     };
     setPoints(prev => [...prev, newPoint]);
-  };
-
-  const performAIIdentification = async (point: BoundaryPoint) => {
-    const dirData = point.directions[point.selectedDirection] || {};
-    const photo = dirData.macro || dirData.close || dirData.middle || dirData.far;
-    if (!photo) return;
-    const base64Data = photo.url.split(',')[1];
-    const choices = markTypes.filter(t => t !== "計算点");
-    const promptText = `境界標識判別: [${choices.join(', ')}] から1つ選んで名称のみ返せ。`;
-    const result = await callGemini({ contents: [{ parts: [{ text: promptText }, { inlineData: { mimeType: "image/jpeg", data: base64Data } }] }] }, apiKey);
-    let aiText = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    aiText = typeof aiText === 'string' ? aiText.replace(/[`*#\n\r]/g, "").trim() : "";
-    const matchedType = markTypes.find(t => aiText.includes(t));
-    if (matchedType) setPoints(prev => prev.map(p => p.id === point.id ? { ...p, markType: matchedType } : p));
-  };
-
-  const identifyMarkWithAI = async (pointId: string) => {
-    const point = points.find(p => p.id === pointId);
-    if (!point || !apiKey) return;
-    setAiProcessingIds(prev => new Set(prev).add(pointId));
-    setErrorMessage("");
-    try { await performAIIdentification(point); }
-    catch (error) { setErrorMessage("AIエラー: " + (error instanceof Error ? error.message : String(error))); }
-    finally { setAiProcessingIds(prev => { const next = new Set(prev); next.delete(pointId); return next; }); }
-  };
-
-  const identifyAllWithAI = async () => {
-    const targets = points.filter(p => p.markType === "未設定" && !aiProcessingIds.has(p.id));
-    if (targets.length === 0 || !apiKey) return;
-    setErrorMessage("");
-    const chunkSize = 5;
-    for (let i = 0; i < targets.length; i += chunkSize) {
-      const chunk = targets.slice(i, i + chunkSize);
-      setAiProcessingIds(prev => { const next = new Set(prev); chunk.forEach(p => next.add(p.id)); return next; });
-      await Promise.all(chunk.map(async (point) => {
-        try { await performAIIdentification(point); } catch { /* ignore */ }
-        finally { setAiProcessingIds(prev => { const next = new Set(prev); next.delete(point.id); return next; }); }
-      }));
-    }
   };
 
   const handleDragStart = (e: DragEvent<HTMLDivElement>, index: number) => { setDraggedItemIndex(index); e.dataTransfer.effectAllowed = "move"; };
@@ -471,9 +408,6 @@ export default function App() {
             <Icon name="Send" size={14} /> SURVIAへ戻す
           </button>
         )}
-        <button onClick={identifyAllWithAI} disabled={points.length === 0 || aiProcessingIds.size > 0} className="bg-indigo-50 text-indigo-600 px-4 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-100 flex items-center gap-2 disabled:opacity-50">
-          <Icon name="Sparkles" size={14} className={aiProcessingIds.size > 0 ? "animate-spin" : ""} /> 一括AI判別
-        </button>
         </div>
       </header>
 
@@ -494,7 +428,6 @@ export default function App() {
               {/* 基本設定 */}
               <div className="bg-white p-5 rounded-2xl border shadow-sm space-y-3">
                 <h2 className="text-xs font-black text-slate-400 uppercase flex items-center gap-2"><Icon name="Settings2" size={14} />基本設定</h2>
-                <input type="password" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="Gemini APIキー" className="w-full bg-slate-50 border rounded-lg px-2 py-1.5 text-sm font-bold" />
                 <select value={ledgerSettings.ledgerType} onChange={e => setLedgerSettings({ ...ledgerSettings, ledgerType: e.target.value })} className="w-full bg-slate-50 border rounded-lg px-3 py-2 text-sm font-bold">
                   {DEFAULT_LEDGER_TYPES.map(t => <option key={t}>{t}</option>)}<option>その他</option>
                 </select>
@@ -554,9 +487,9 @@ export default function App() {
                 {points.map((p, i) => (
                   <div key={p.id} draggable onDragStart={e => handleDragStart(e, i)} onDragOver={e => handleDragOver(e, i)} onDragEnd={() => setDraggedItemIndex(null)} className={`text-[10px] font-bold p-2 bg-slate-50 border rounded truncate flex items-center gap-2 cursor-grab transition-colors ${draggedItemIndex === i ? 'drag-ghost' : 'hover:border-blue-300 hover:bg-blue-50'}`}>
                     <Icon name="GripVertical" size={12} className="text-slate-300" />
-                    {aiProcessingIds.has(p.id) && <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping shrink-0"></div>}
                     <span className="truncate">{p.pointName || "(未入力)"}</span>
                     {p.markType === "計算点" && <span className="ml-auto text-[8px] bg-slate-200 px-1 rounded">計</span>}
+                    {p.markSource === 'ai' && <span className="ml-auto text-[8px] bg-emerald-100 text-emerald-700 px-1 rounded" title="AIが自動入力">AI</span>}
                   </div>
                 ))}
               </div>
@@ -564,9 +497,11 @@ export default function App() {
             <section className="flex-1 overflow-y-auto p-6 space-y-4">
               {points.map(point => {
                 const dirData = point.directions[point.selectedDirection] || {};
-                const isAiWorking = aiProcessingIds.has(point.id);
+                const prediction = predictionForPoint(point);
+                const aiFilled = point.markSource === 'ai';
+                const aiScore = prediction?.status === 'ok' ? prediction.candidates[0]?.score : undefined;
                 return (
-                  <div key={point.id} className={`bg-white rounded-xl border shadow-sm p-4 transition ${isAiWorking ? 'ring-2 ring-blue-500/20' : ''}`}>
+                  <div key={point.id} className="bg-white rounded-xl border shadow-sm p-4 transition">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-4">
                         <div className="flex flex-col">
@@ -576,15 +511,12 @@ export default function App() {
                         <div className="flex flex-col">
                           <span className="text-[9px] font-bold text-slate-400">標識</span>
                           <div className="flex items-center gap-2">
-                            <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value })} className="border rounded px-2 py-1 text-xs font-bold bg-slate-50 h-8">
+                            <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value, markSource: undefined })} title={aiFilled ? `AIが自動入力${aiScore !== undefined ? `（${Math.round(aiScore * 100)}%）` : ''}。選び直すと手入力になります` : undefined} data-testid="mark-select" data-ai-filled={aiFilled ? 'true' : undefined} className={`border rounded px-2 py-1 text-xs font-bold h-8 ${aiFilled ? 'bg-emerald-50 border-emerald-400 text-emerald-800' : 'bg-slate-50'}`}>
                               <option value="未設定">未設定</option>
                               {markTypes.map(t => <option key={t}>{t}</option>)}
                               {point.markType !== "未設定" && !markTypes.includes(point.markType) && <option key={point.markType}>{point.markType}</option>}
                             </select>
-                            <button onClick={() => identifyMarkWithAI(point.id)} disabled={isAiWorking || point.markType === "計算点"} className={`w-8 h-8 rounded-lg border flex items-center justify-center transition ${isAiWorking ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white text-blue-600 border-blue-200 hover:bg-blue-50 disabled:opacity-30'}`}>
-                              {isAiWorking ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div> : <Icon name="Sparkles" size={14} />}
-                            </button>
-                            {point.markType !== "計算点" && <PredictionBadge prediction={predictionForPoint(point)} markTypes={markTypes} activeModelId={ai.activeId} />}
+                            {point.markType !== "計算点" && <PredictionBadge prediction={prediction} markTypes={markTypes} activeModelId={ai.activeId} />}
                           </div>
                         </div>
                       </div>
