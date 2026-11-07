@@ -8,7 +8,7 @@ import { errorText, OnnxClassifier } from './onnxClassifier';
 import type { Candidate } from './postprocess';
 
 export type OnnxPrediction =
-  | { status: 'ok'; modelId: string; modelLabel: string; candidates: Candidate[]; minConfidence: number }
+  | { status: 'ok'; modelId: string; modelLabel: string; candidates: Candidate[]; minConfidence: number; autoFillConfidence: number | null }
   | { status: 'error'; modelId: string; modelLabel: string; message: string };
 
 export type EngineStatus =
@@ -32,6 +32,8 @@ export interface OnnxModels {
   remove(id: string): Promise<void>;
   /** モデル未使用なら null。失敗しても例外は投げず status:'error' を返す */
   classify(file: Blob): Promise<OnnxPrediction | null>;
+  /** いま推論に使っているモデル（自動入力の対象判定用。描画を待たずに最新を返す） */
+  currentModelId(): string | null;
 }
 
 function readFileText(f: Blob): Promise<string> {
@@ -217,11 +219,13 @@ export function useOnnxModels(): OnnxModels {
     const label = modelLabel(current.classifier.config);
     try {
       const candidates = await current.classifier.classify(file);
-      return { status: 'ok', modelId: current.id, modelLabel: label, candidates, minConfidence: current.classifier.config.minConfidence };
+      return { status: 'ok', modelId: current.id, modelLabel: label, candidates, minConfidence: current.classifier.config.minConfidence, autoFillConfidence: current.classifier.config.autoFillConfidence ?? null };
     } catch (e) {
       return { status: 'error', modelId: current.id, modelLabel: label, message: errorText(e) };
     }
   }, []);
 
-  return { models, activeId, status, persistent, busy, register, activate, remove, classify };
+  const currentModelId = useCallback(() => classifierRef.current?.id ?? null, []);
+
+  return { models, activeId, status, persistent, busy, register, activate, remove, classify, currentModelId };
 }

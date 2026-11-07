@@ -50,7 +50,7 @@ export function ModelManager({ ai, onReclassify, reclassifyCount, reclassifying 
 
   const status = ai.status;
   const dot = status.kind === 'ready' ? 'bg-emerald-500' : status.kind === 'error' ? 'bg-red-500' : status.kind === 'loading' ? 'bg-slate-300 animate-pulse' : 'bg-slate-300';
-  const statusTip = status.kind === 'ready' ? '近景写真を読込時に判別します（候補表示のみ）'
+  const statusTip = status.kind === 'ready' ? '近景写真を読込時に判別します'
     : status.kind === 'error' ? `モデルを使えません（手動で選択）: ${status.message}`
     : status.kind === 'loading' ? '準備中'
     : 'AI未使用（手動で選択）';

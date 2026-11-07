@@ -1,13 +1,14 @@
-// AI候補と確信度の表示のみ（標識の選択は変更しない）
+// AI候補と確信度の表示（自動入力は pointPrediction.applyAutoFill が行う）
 
 import type { OnnxPrediction } from './useOnnxModels';
+import { NO_AUTO_FILL } from './pointPrediction';
 
 function pct(score: number): string {
   return `${Math.round(score * 100)}%`;
 }
 
 // 自動確定させない種類（候補は常に参考扱いの色）
-const ADVISORY_ONLY = ['計算点'];
+const ADVISORY_ONLY = NO_AUTO_FILL;
 
 export function PredictionBadge({ prediction, markTypes, activeModelId }: { prediction: OnnxPrediction | undefined; markTypes: string[]; activeModelId: string | null }) {
   if (!prediction) return null;
@@ -26,7 +27,7 @@ export function PredictionBadge({ prediction, markTypes, activeModelId }: { pred
   const lowConfidence = top.score < prediction.minConfidence;
   const inList = markTypes.includes(top.label) && !ADVISORY_ONLY.includes(top.label);
   const lines = [
-    '候補表示のみ。標識は手動で選択してください。',
+    prediction.autoFillConfidence != null ? `${pct(prediction.autoFillConfidence)}以上で「未設定」に自動入力` : '候補表示のみ',
     ...prediction.candidates.map((c, i) => `${i + 1}. ${c.label} ${pct(c.score)}${markTypes.includes(c.label) ? '' : '（標識リスト外）'}`),
     prediction.modelLabel,
   ];
