@@ -9,12 +9,12 @@ import type { LucideIcon } from 'lucide-react';
 import { useOnnxModels, type OnnxPrediction } from './ai/useOnnxModels';
 import { ModelManager } from './ai/ModelManager';
 import { PredictionBadge } from './ai/PredictionBadge';
+import { addNewDefaults, DEFAULT_MARK_TYPES } from './utils/markTypes';
 import { aiTargetFiles, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
 import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaRef } from './utils/surviaHandoff';
 
 // --- 定数 ---
 
-const INITIAL_MARK_TYPES = ["金属鋲", "金属標", "プラスチック杭", "コンクリート杭", "コンクリート角", "木杭", "刻印", "計算点", "真鍮標識"];
 const DEFAULT_LEDGER_TYPES = ["境界標識設置写真", "器械点設置写真", "測点写真"];
 
 type ViewId = 'far' | 'middle' | 'close' | 'macro';
@@ -181,7 +181,7 @@ export default function App() {
 
   // Settings with localStorage
   const [apiKey, setApiKey] = useState(() => getStorageItem('apiKey', ''));
-  const [markTypes, setMarkTypes] = useState(() => getStorageItem('markTypes', INITIAL_MARK_TYPES));
+  const [markTypes, setMarkTypes] = useState(() => addNewDefaults(getStorageItem('markTypes', DEFAULT_MARK_TYPES), getStorageItem<string[] | null>('markTypeDefaults', null)));
   const [itemsPerPage, setItemsPerPage] = useState(() => getStorageItem('itemsPerPage', 3));
   const [showDate, setShowDate] = useState(() => getStorageItem('showDate', false));
   const [compressionMode, setCompressionMode] = useState<CompressionModeKey>(() => getStorageItem('compressionMode', 'medium'));
@@ -205,6 +205,7 @@ export default function App() {
   // localStorage sync
   useEffect(() => setStorageItem('apiKey', apiKey), [apiKey]);
   useEffect(() => setStorageItem('markTypes', markTypes), [markTypes]);
+  useEffect(() => setStorageItem('markTypeDefaults', DEFAULT_MARK_TYPES), []);
   useEffect(() => setStorageItem('itemsPerPage', itemsPerPage), [itemsPerPage]);
   useEffect(() => setStorageItem('showDate', showDate), [showDate]);
   useEffect(() => setStorageItem('compressionMode', compressionMode), [compressionMode]);
@@ -371,10 +372,8 @@ export default function App() {
     const photo = dirData.macro || dirData.close || dirData.middle || dirData.far;
     if (!photo) return;
     const base64Data = photo.url.split(',')[1];
-    const customPrompt = markTypes.filter(t => !INITIAL_MARK_TYPES.includes(t)).length > 0
-      ? `\n追加選択肢: [${markTypes.filter(t => !INITIAL_MARK_TYPES.includes(t)).join(', ')}]` : "";
-
-    const promptText = `境界標識判別: [金属鋲, 金属標, プラスチック杭, コンクリート杭, コンクリート角, 木杭, 刻印, 真鍮標識]${customPrompt} から1つ選んで名称のみ返せ。`;
+    const choices = markTypes.filter(t => t !== "計算点");
+    const promptText = `境界標識判別: [${choices.join(', ')}] から1つ選んで名称のみ返せ。`;
     const result = await callGemini({ contents: [{ parts: [{ text: promptText }, { inlineData: { mimeType: "image/jpeg", data: base64Data } }] }] }, apiKey);
     let aiText = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
     aiText = typeof aiText === 'string' ? aiText.replace(/[`*#\n\r]/g, "").trim() : "";
