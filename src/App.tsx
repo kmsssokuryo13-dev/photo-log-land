@@ -12,6 +12,8 @@ import { PredictionBadge } from './ai/PredictionBadge';
 import { addNewDefaults, DEFAULT_MARK_TYPES } from './utils/markTypes';
 import { aiTargetFiles, applyAutoFill, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
 import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaRef } from './utils/surviaHandoff';
+import { COMPRESSION_MODES, compressImage, isImageFile, mapPool, type CompressionModeKey } from './utils/imageLoad';
+import { clearWork, deleteOriginals, loadOriginals, loadWork, putOriginal, saveWork } from './utils/workStore';
 
 // --- 定数 ---
 
@@ -24,13 +26,6 @@ const VIEW_TYPES: { id: ViewId; label: string }[] = [
   { id: 'close', label: '近景' },
   { id: 'macro', label: 'マクロ' }
 ];
-
-type CompressionModeKey = 'original' | 'medium' | 'high';
-const COMPRESSION_MODES: Record<CompressionModeKey, { label: string; maxDim: number; quality: number; desc: string }> = {
-  original: { label: 'オリジナル', maxDim: Infinity, quality: 1.0, desc: '無加工' },
-  medium: { label: '中圧縮', maxDim: 1600, quality: 0.8, desc: '14枚で4〜6MB' },
-  high: { label: '高圧縮', maxDim: 1024, quality: 0.6, desc: '40枚で3〜5MB' }
-};
 
 // --- 型定義 ---
 
@@ -89,37 +84,6 @@ function getStorageItem<T>(key: string, initialValue: T): T {
 
 function setStorageItem<T>(key: string, value: T): void {
   try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
-}
-
-function compressImage(file: File, mode: CompressionModeKey): Promise<string> {
-  return new Promise((resolve) => {
-    const settings = COMPRESSION_MODES[mode];
-    if (mode === 'original') {
-      const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target?.result as string);
-      reader.readAsDataURL(file);
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new window.Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const width = img.width;
-        const height = img.height;
-        const ratio = Math.min(settings.maxDim / width, settings.maxDim / height, 1);
-        canvas.width = width * ratio;
-        canvas.height = height * ratio;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          resolve(canvas.toDataURL('image/jpeg', settings.quality));
-        }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
-  });
 }
 
 function parseFileName(fileName: string): { baseName: string; viewType: ViewId; direction: number } {
@@ -201,53 +165,78 @@ export default function App() {
   };
 
   const handleFileUpload = async (event: ChangeEvent<HTMLInputElement>) => {
-    await addFiles(Array.from(event.target.files || []));
+    const files = Array.from(event.target.files || []);
+    event.target.value = ''; // 同じファイルをもう一度選んでも読み込めるように
+    const { skipped } = await addFiles(files);
+    if (skipped > 0) setNotice(`読めないファイル ${skipped} 件は飛ばしました`);
   };
 
-  /** 写真を読み込む（ファイル選択・フォルダ読込・SURVIA から）。marks は SURVIA の境界標（標識が未設定の点に入れる）。 */
-  const addFiles = async (files: File[], marks: { name: string; markType: string }[] = []) => {
-    if (files.length === 0) return;
+  /** 近景の元写真を手放す（メモリと自動保存の両方から） */
+  const dropOriginals = (ids: string[]) => {
+    ids.forEach(id => originalFilesRef.current.delete(id));
+    void deleteOriginals(ids).catch(() => undefined);
+  };
+
+  /**
+   * 写真を読み込む（ファイル選択・フォルダ読込・SURVIA から）。marks は SURVIA の境界標（標識が未設定の点に入れる）。
+   * 画像以外・画像として開けないファイルは飛ばし、その数を返す。圧縮は数枚ずつ同時に進める（AI 判別は1枚ずつ順番）。
+   */
+  const addFiles = async (all: File[], marks: { name: string; markType: string }[] = []): Promise<{ added: number; skipped: number }> => {
+    const files = all.filter(isImageFile);
+    if (files.length === 0) return { added: 0, skipped: all.length };
     setIsProcessing(true);
     setProcessingProgress({ current: 0, total: files.length });
-    const newFileData: FileData[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    let finished = 0;
+    const results = await mapPool(files, 4, async (file): Promise<FileData | null> => {
       const { baseName, viewType, direction } = parseFileName(file.name);
       const id = newFileId();
-      // 近景のみ、圧縮前の元画像でPC内AI判別（失敗しても読込は続行）
-      let onnx: OnnxPrediction | undefined;
-      if (isAiTargetView(viewType)) {
-        originalFilesRef.current.set(id, file);
-        onnx = (await ai.classify(file).catch(() => null)) ?? undefined;
+      const aiTarget = isAiTargetView(viewType);
+      try {
+        // 近景のみ、圧縮前の元画像でPC内AI判別（失敗しても読込は続行）
+        const [compressedUrl, prediction] = await Promise.all([
+          compressImage(file, compressionMode),
+          aiTarget ? ai.classify(file).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (aiTarget) {
+          originalFilesRef.current.set(id, file);
+          void putOriginal(id, file).catch(() => undefined);
+        }
+        return {
+          id,
+          fileName: file.name, baseName, viewType, direction, url: compressedUrl,
+          lastModified: new Date(file.lastModified).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }),
+          modifiedMs: file.lastModified,
+          onnx: prediction ?? undefined
+        };
+      } catch {
+        return null; // 画像として開けない（HEIC など）
+      } finally {
+        finished++;
+        setProcessingProgress(prev => ({ ...prev, current: finished }));
       }
-      const compressedUrl = await compressImage(file, compressionMode);
-      newFileData.push({
-        id,
-        fileName: file.name, baseName, viewType, direction, url: compressedUrl,
-        lastModified: new Date(file.lastModified).toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }),
-        modifiedMs: file.lastModified,
-        onnx
-      });
-      setProcessingProgress(prev => ({ ...prev, current: i + 1 }));
-    }
+    });
+    const newFileData = results.filter((x): x is FileData => x !== null);
     setPoints(prev => {
       const updated = [...prev];
+      const replacedIds: string[] = [];
       newFileData.forEach(data => {
         const idx = updated.findIndex(p => p.pointName === data.baseName);
         if (idx > -1) {
-          if (!updated[idx].directions[data.direction]) updated[idx].directions[data.direction] = {};
-          const replaced = updated[idx].directions[data.direction][data.viewType];
-          if (replaced && replaced.id !== data.id) originalFilesRef.current.delete(replaced.id);
-          updated[idx].directions[data.direction][data.viewType] = data;
+          const point = updated[idx];
+          const views = point.directions[data.direction] || {};
+          const replaced = views[data.viewType];
+          if (replaced && replaced.id !== data.id) replacedIds.push(replaced.id);
+          updated[idx] = { ...point, directions: { ...point.directions, [data.direction]: { ...views, [data.viewType]: data } } };
         } else {
           updated.push({
-            id: Math.random().toString(36).substr(2, 9),
+            id: newFileId(),
             pointName: data.baseName, markType: "未設定",
             directions: { [data.direction]: { [data.viewType]: data } },
             selectedDirection: data.direction, notes: ""
           });
         }
       });
+      if (replacedIds.length) dropOriginals(replacedIds);
       // SURVIA の境界標（同じ点名で、標識が未設定の点だけ）。AI の自動入力より優先
       const withMarks = updated.map(p => {
         const m = marks.find(x => x.markType && x.name.normalize('NFKC').trim() === p.pointName.normalize('NFKC').trim());
@@ -257,6 +246,7 @@ export default function App() {
     });
     setIsProcessing(false);
     if (newFileData.length > 0) setActiveTab('edit');
+    return { added: newFileData.length, skipped: all.length - newFileData.length };
   };
 
   // SURVIA から開かれたとき: 写真・現場名・境界標を受け取る（1回だけ。受け渡し口の場所はすぐ URL から消す）
@@ -280,8 +270,10 @@ export default function App() {
       try {
         const got = await receiveFromSurvia(ref);
         if (got.siteName) setLedgerSettings(s => ({ ...s, siteName: got.siteName }));
-        await addFiles(got.files, got.marks);
-        setNotice(`SURVIA から写真 ${got.files.length} 枚を受け取りました`);
+        // SURVIA の案件で始め直す（前回の自動保存は使わない）
+        await clearWork().catch(() => undefined);
+        const { added, skipped } = await addFiles(got.files, got.marks);
+        setNotice(`SURVIA から写真 ${added} 枚を受け取りました${skipped ? `（${skipped} 件は読めず）` : ''}`);
       } catch (e) {
         setErrorMessage(e instanceof Error ? e.message : String(e));
       }
@@ -289,6 +281,50 @@ export default function App() {
     // 最初の1回だけ（addFiles は毎回作り直されるが、受け取りは1回）
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 作業の自動保存。起動時に前回の作業を開き、それ以降の変更を保存する（SURVIA から開いたときは前回分を開かない）
+  const [workLoaded, setWorkLoaded] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (survia) return;
+        const [saved, originals] = await Promise.all([loadWork<BoundaryPoint>(), loadOriginals()]);
+        if (cancelled) return;
+        const pts = saved?.points ?? [];
+        const keep = new Set(aiTargetFiles(pts).map(fd => fd.id));
+        const stale: string[] = [];
+        originals.forEach((file, id) => { if (keep.has(id)) originalFilesRef.current.set(id, file); else stale.push(id); });
+        void deleteOriginals(stale).catch(() => undefined);
+        if (pts.length > 0) {
+          setPoints(prev => prev.length > 0 ? prev : pts);
+          setActiveTab('edit');
+          setNotice('前回の作業を開きました');
+        }
+      } catch {
+        // 保存先が使えない環境では自動保存なしで使う
+      } finally {
+        if (!cancelled) setWorkLoaded(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [survia]);
+  useEffect(() => {
+    if (!workLoaded) return;
+    const t = window.setTimeout(() => {
+      saveWork(points).catch(() => setErrorMessage('自動保存できません（PCの空き容量を確認してください）'));
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [points, workLoaded]);
+
+  /** 作業中の点と写真をすべて消して、新しく始める */
+  const clearAll = () => {
+    if (points.length === 0 || !confirm('作業中の点と写真をすべて消しますか？')) return;
+    originalFilesRef.current.clear();
+    setPoints([]);
+    void clearWork().catch(() => undefined);
+    setActiveTab('import');
+  };
 
   /** 台帳の点名・標識・撮影日（左・右の写真）を SURVIA へ戻す。 */
   const sendToSurvia = async () => {
@@ -357,7 +393,7 @@ export default function App() {
   const updatePoint = (id: string, updates: Partial<BoundaryPoint>) => setPoints(prev => prev.map(p => p.id === id ? { ...p, ...updates } : p));
   const deletePoint = (id: string) => {
     const target = points.find(p => p.id === id);
-    if (target) aiTargetFiles([target]).forEach(fd => originalFilesRef.current.delete(fd.id));
+    if (target) dropOriginals(aiTargetFiles([target]).map(fd => fd.id));
     setPoints(prev => prev.filter(p => p.id !== id));
   };
 
@@ -482,6 +518,9 @@ export default function App() {
                 <button onClick={addCalculationPoint} className="w-full bg-slate-900 text-white py-2 rounded-lg text-[10px] font-bold flex items-center justify-center gap-2 hover:bg-slate-800 transition">
                   <Icon name="PlusCircle" size={14} /> 計算点を追加
                 </button>
+                <button onClick={clearAll} disabled={points.length === 0} title="作業中の点と写真をすべて消して新しく始めます" className="w-full border border-slate-200 text-slate-500 py-1.5 rounded-lg text-[10px] font-bold flex items-center justify-center gap-2 hover:border-red-300 hover:text-red-500 transition disabled:opacity-40">
+                  <Icon name="Trash2" size={12} /> すべて消去
+                </button>
               </div>
               <div className="flex-1 overflow-y-auto p-2 space-y-1">
                 {points.map((p, i) => (
@@ -518,6 +557,10 @@ export default function App() {
                             </select>
                             {point.markType !== "計算点" && <PredictionBadge prediction={prediction} markTypes={markTypes} activeModelId={ai.activeId} />}
                           </div>
+                        </div>
+                        <div className="flex flex-col">
+                          <span className="text-[9px] font-bold text-slate-400">備考</span>
+                          <input type="text" value={point.notes} onChange={e => updatePoint(point.id, { notes: e.target.value })} title="台帳の点名の横に印刷されます" data-testid="notes-input" className="text-xs font-bold bg-slate-50 border rounded px-2 h-8 w-48 focus:border-blue-500 focus:outline-none" />
                         </div>
                       </div>
                       <div className="flex gap-1 items-center">
@@ -565,6 +608,7 @@ export default function App() {
                             <div className="flex items-center gap-6">
                               <span className="text-sm font-black">点名: {p.pointName || "---"}</span>
                               <span className="text-xs font-bold">標識: {p.markType}</span>
+                              {p.notes && <span className="text-xs font-bold">備考: {p.notes}</span>}
                             </div>
                             {showDate && representative && <div className="text-[9px] font-bold text-slate-500">撮影日: {representative.lastModified}</div>}
                           </div>
