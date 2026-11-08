@@ -283,36 +283,46 @@ export default function App() {
   }, []);
 
   // 作業の自動保存。起動時に前回の作業を開き、それ以降の変更を保存する（SURVIA から開いたときは前回分を開かない）
+  // 前回分を読めなかったときは保存しない（空で上書きして前回分を消さないため）
   const [workLoaded, setWorkLoaded] = useState(false);
+  const saveFailedShown = useRef(false);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      if (survia) { setWorkLoaded(true); return; }
+      let pts: BoundaryPoint[];
       try {
-        if (survia) return;
-        const [saved, originals] = await Promise.all([loadWork<BoundaryPoint>(), loadOriginals()]);
+        pts = (await loadWork<BoundaryPoint>())?.points ?? [];
+      } catch {
+        return; // 保存先が使えない環境では自動保存なしで使う
+      }
+      if (cancelled) return;
+      // 元写真が読めなくても作業本体は開く（再判別できないだけ）
+      try {
+        const originals = await loadOriginals();
         if (cancelled) return;
-        const pts = saved?.points ?? [];
         const keep = new Set(aiTargetFiles(pts).map(fd => fd.id));
         const stale: string[] = [];
         originals.forEach((file, id) => { if (keep.has(id)) originalFilesRef.current.set(id, file); else stale.push(id); });
         void deleteOriginals(stale).catch(() => undefined);
-        if (pts.length > 0) {
-          setPoints(prev => prev.length > 0 ? prev : pts);
-          setActiveTab('edit');
-          setNotice('前回の作業を開きました');
-        }
-      } catch {
-        // 保存先が使えない環境では自動保存なしで使う
-      } finally {
-        if (!cancelled) setWorkLoaded(true);
+      } catch { /* ignore */ }
+      if (pts.length > 0) {
+        setPoints(prev => prev.length > 0 ? prev : pts);
+        setActiveTab('edit');
+        setNotice('前回の作業を開きました');
       }
+      setWorkLoaded(true);
     })();
     return () => { cancelled = true; };
   }, [survia]);
   useEffect(() => {
     if (!workLoaded) return;
     const t = window.setTimeout(() => {
-      saveWork(points).catch(() => setErrorMessage('自動保存できません（PCの空き容量を確認してください）'));
+      saveWork(points).then(() => { saveFailedShown.current = false; }, () => {
+        if (saveFailedShown.current) return;
+        saveFailedShown.current = true;
+        setErrorMessage('自動保存できません（PCの空き容量を確認してください）');
+      });
     }, 300);
     return () => window.clearTimeout(t);
   }, [points, workLoaded]);
