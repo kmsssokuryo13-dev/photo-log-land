@@ -11,7 +11,7 @@ import { ModelManager } from './ai/ModelManager';
 import { PredictionBadge } from './ai/PredictionBadge';
 import { addNewDefaults, DEFAULT_MARK_TYPES } from './utils/markTypes';
 import { aiTargetFiles, applyAutoFill, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
-import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaRef } from './utils/surviaHandoff';
+import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaMark, type SurviaRef } from './utils/surviaHandoff';
 import { COMPRESSION_MODES, compressImage, isImageFile, mapPool, type CompressionModeKey } from './utils/imageLoad';
 import { clearWork, deleteOriginals, loadOriginals, loadWork, putOriginal, saveWork } from './utils/workStore';
 
@@ -49,6 +49,8 @@ interface BoundaryPoint {
   directions: Record<number, Partial<Record<ViewId, FileData>>>;
   selectedDirection: number;
   notes: string;
+  setting?: string; // 新設・既設（SURVIA の境界点から。台帳では表示と印字だけ）
+  kind?: string; // 筆界点・分割点（同じ）
 }
 
 interface LedgerSettings {
@@ -181,7 +183,7 @@ export default function App() {
    * 写真を読み込む（ファイル選択・フォルダ読込・SURVIA から）。marks は SURVIA の境界標（標識が未設定の点に入れる）。
    * 画像以外・画像として開けないファイルは飛ばし、その数を返す。圧縮は数枚ずつ同時に進める（AI 判別は1枚ずつ順番）。
    */
-  const addFiles = async (all: File[], marks: { name: string; markType: string }[] = []): Promise<{ added: number; skipped: number }> => {
+  const addFiles = async (all: File[], marks: SurviaMark[] = []): Promise<{ added: number; skipped: number }> => {
     const files = all.filter(isImageFile);
     if (files.length === 0) return { added: 0, skipped: all.length };
     setIsProcessing(true);
@@ -238,9 +240,13 @@ export default function App() {
       });
       if (replacedIds.length) dropOriginals(replacedIds);
       // SURVIA の境界標（同じ点名で、標識が未設定の点だけ）。AI の自動入力より優先
+      // 新設既設・筆界点か分割点かは SURVIA の値をそのまま付ける
+      const same = (x: SurviaMark, p: BoundaryPoint) => x.name.normalize('NFKC').trim() === p.pointName.normalize('NFKC').trim();
       const withMarks = updated.map(p => {
-        const m = marks.find(x => x.markType && x.name.normalize('NFKC').trim() === p.pointName.normalize('NFKC').trim());
-        return m && p.markType === "未設定" ? { ...p, markType: m.markType } : p;
+        const m = marks.find(x => x.markType && same(x, p));
+        const a = marks.find(x => same(x, p));
+        const q = a && (a.setting || a.kind) ? { ...p, setting: a.setting, kind: a.kind } : p;
+        return m && q.markType === "未設定" ? { ...q, markType: m.markType } : q;
       });
       return applyAutoFill(withMarks, markTypes, ai.currentModelId());
     });
@@ -568,6 +574,14 @@ export default function App() {
                             {point.markType !== "計算点" && <PredictionBadge prediction={prediction} markTypes={markTypes} activeModelId={ai.activeId} />}
                           </div>
                         </div>
+                        {(point.setting || point.kind) && (
+                          <div className="flex flex-col" title="SURVIA の境界点で入れます" data-testid="point-attrs">
+                            <span className="text-[9px] font-bold text-slate-400">SURVIA</span>
+                            <div className="flex items-center gap-1 h-8">
+                              {[point.setting, point.kind].filter(Boolean).map(t => <span key={t} className="text-xs font-bold bg-slate-100 border rounded px-2 py-1">{t}</span>)}
+                            </div>
+                          </div>
+                        )}
                         <div className="flex flex-col">
                           <span className="text-[9px] font-bold text-slate-400">備考</span>
                           <input type="text" value={point.notes} onChange={e => updatePoint(point.id, { notes: e.target.value })} title="台帳の点名の横に印刷されます" data-testid="notes-input" className="text-xs font-bold bg-slate-50 border rounded px-2 h-8 w-48 focus:border-blue-500 focus:outline-none" />
@@ -618,6 +632,7 @@ export default function App() {
                             <div className="flex items-center gap-6">
                               <span className="text-sm font-black">点名: {p.pointName || "---"}</span>
                               <span className="text-xs font-bold">標識: {p.markType}</span>
+                              {(p.setting || p.kind) && <span className="text-xs font-bold" data-testid="print-attrs">{[p.setting, p.kind].filter(Boolean).join('・')}</span>}
                               {p.notes && <span className="text-xs font-bold">備考: {p.notes}</span>}
                             </div>
                             {showDate && representative && <div className="text-[9px] font-bold text-slate-500">撮影日: {representative.lastModified}</div>}

@@ -24,6 +24,10 @@ describe('一覧の形', () => {
     expect(parseManifest({ ...ok, photos: [{ index: 0, name: '../a.jpg' }] })).toBeNull();
     expect(parseManifest({ ...ok, marks: 'x' })).toBeNull();
   });
+  it('SURVIA の新設既設・筆界点か分割点かを読む（知らない値は付けない）', () => {
+    const marks = [{ name: 'P1', markType: '', setting: '新設', kind: '分割点' }, { name: 'P2', markType: '金属鋲', setting: '移設', kind: 1 }];
+    expect(parseManifest({ ...ok, marks })!.marks).toEqual([{ name: 'P1', markType: '', setting: '新設', kind: '分割点' }, { name: 'P2', markType: '金属鋲' }]);
+  });
 });
 
 describe('受け取りと戻し', () => {

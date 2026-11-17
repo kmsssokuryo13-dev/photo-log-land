@@ -13,7 +13,10 @@ const MAX_PHOTOS = 300;
 const MAX_POINTS = 200;
 
 export type SurviaRef = { port: number; token: string };
-export type SurviaMark = { name: string; markType: string };
+/** SURVIA の境界点の新設・既設、筆界点・分割点（SURVIA で入れる。台帳では表示と印字だけ。2026-11-17 ユーザー）。 */
+export const SURVIA_SETTINGS = ['新設', '既設'] as const;
+export const SURVIA_KINDS = ['筆界点', '分割点'] as const;
+export type SurviaMark = { name: string; markType: string; setting?: string; kind?: string };
 export type SurviaManifest = { siteName: string; marks: SurviaMark[]; photos: { index: number; name: string; modified: number }[] };
 /** SURVIA へ戻す点。photoDates は左・右の写真の撮影日（YYYY-MM-DD か空）。 */
 export type SurviaPoint = { name: string; markType: string; photoDates: [string, string] };
@@ -52,7 +55,10 @@ export const parseManifest = (v: unknown): SurviaManifest | null => {
   const marks: SurviaMark[] = [];
   for (const m of v.marks) {
     if (!isObj(m) || !text(m.name, 50) || !text(m.markType, 50)) return null;
-    marks.push({ name: m.name, markType: m.markType });
+    // 新設既設・筆界点か分割点か（無い・知らない値は付けない。古い SURVIA は送らない）
+    const setting = (SURVIA_SETTINGS as readonly unknown[]).includes(m.setting) ? m.setting as string : undefined;
+    const kind = (SURVIA_KINDS as readonly unknown[]).includes(m.kind) ? m.kind as string : undefined;
+    marks.push({ name: m.name, markType: m.markType, ...(setting ? { setting } : {}), ...(kind ? { kind } : {}) });
   }
   const photos: SurviaManifest['photos'] = [];
   for (const p of v.photos) {
