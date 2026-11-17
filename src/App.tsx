@@ -578,7 +578,7 @@ export default function App() {
                           <div className="flex flex-col" title="SURVIA の境界点で入れます" data-testid="point-attrs">
                             <span className="text-[9px] font-bold text-slate-400">SURVIA</span>
                             <div className="flex items-center gap-1 h-8">
-                              {[point.setting, point.kind].filter(Boolean).map(t => <span key={t} className="text-xs font-bold bg-slate-100 border rounded px-2 py-1">{t}</span>)}
+                              {[point.setting, point.kind].filter(Boolean).map(t => <span key={t} className="text-xs font-bold bg-slate-100 border rounded px-2 py-1 whitespace-nowrap">{t}</span>)}
                             </div>
                           </div>
                         )}
