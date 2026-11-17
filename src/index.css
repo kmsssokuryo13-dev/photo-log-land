@@ -21,7 +21,7 @@ body {
         border: none !important; display: flex !important; flex-direction: column !important;
         background: white !important;
     }
-    .point-card-box { border: 2px solid #000000 !important; break-inside: avoid !important; margin-bottom: 5mm !important; }
+    .point-card-box { break-inside: avoid !important; }
     @page { size: A4 portrait; margin: 0; }
 }
 
