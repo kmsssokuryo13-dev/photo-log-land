@@ -10,7 +10,7 @@ import { useOnnxModels, type OnnxPrediction } from './ai/useOnnxModels';
 import { ModelManager } from './ai/ModelManager';
 import { PredictionBadge } from './ai/PredictionBadge';
 import { addNewDefaults, DEFAULT_MARK_TYPES } from './utils/markTypes';
-import { aiTargetFiles, applyAutoFill, applyPrediction, isAiTargetView, predictionForPoint } from './ai/pointPrediction';
+import { aiTargetFiles, applyAutoFill, applyPrediction, isAiTargetView, predictionForPoint, UNSET_MARK } from './ai/pointPrediction';
 import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaMark, type SurviaRef } from './utils/surviaHandoff';
 import { COMPRESSION_MODES, compressImage, isImageFile, mapPool, type CompressionModeKey } from './utils/imageLoad';
 import { clearWork, deleteOriginals, loadOriginals, loadWork, putOriginal, saveWork } from './utils/workStore';
@@ -567,7 +567,7 @@ export default function App() {
                           <span className="text-[9px] font-bold text-slate-400">標識</span>
                           <div className="flex items-center gap-2">
                             <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value, markSource: undefined })} title={aiFilled ? `AIが自動入力${aiScore !== undefined ? `（${Math.round(aiScore * 100)}%）` : ''}。選び直すと手入力になります` : undefined} data-testid="mark-select" data-ai-filled={aiFilled ? 'true' : undefined} className={`border rounded px-2 py-1 text-xs font-bold h-8 ${aiFilled ? 'bg-emerald-50 border-emerald-400 text-emerald-800' : 'bg-slate-50'}`}>
-                              <option value="未設定">未設定</option>
+                              <option value={UNSET_MARK}></option>
                               {markTypes.map(t => <option key={t}>{t}</option>)}
                               {point.markType !== "未設定" && !markTypes.includes(point.markType) && <option key={point.markType}>{point.markType}</option>}
                             </select>
@@ -622,26 +622,29 @@ export default function App() {
                     <h1 className="text-xl font-black">{displayLedgerName || "境界点写真台帳"}</h1>
                     <span className="text-xs font-bold">現場名: {ledgerSettings.siteName || "---"}</span>
                   </div>
-                  <div className="flex-1 space-y-5 min-h-0">
+                  <div className="flex-1 space-y-3 min-h-0">
                     {pagePoints.map(p => {
                       const dirData = p.directions[p.selectedDirection] || {};
                       const representative = Object.values(dirData)[0];
+                      const mark = p.markType && p.markType !== UNSET_MARK ? p.markType : '';
                       return (
-                        <div key={p.id} className={`point-card-box flex flex-col overflow-hidden ${itemsPerPage === 1 ? 'h-[230mm]' : itemsPerPage === 2 ? 'h-[110mm]' : 'h-[75mm]'}`}>
-                          <div className="pb-1 flex justify-between items-baseline shrink-0">
+                        <div key={p.id} className={`point-card-box border border-black flex flex-col overflow-hidden ${itemsPerPage === 1 ? 'h-[230mm]' : itemsPerPage === 2 ? 'h-[110mm]' : 'h-[75mm]'}`}>
+                          <div className="px-3 py-1 border-b border-black flex justify-between items-baseline gap-3 shrink-0">
                             <div className="flex items-baseline gap-5 min-w-0">
-                              <span className="text-base font-black">{p.pointName || "---"}</span>
-                              <span className="text-xs"><span className="text-slate-500">標識 </span><span className="font-bold">{p.markType}</span></span>
-                              {(p.setting || p.kind) && <span className="text-xs font-bold" data-testid="print-attrs">{[p.setting, p.kind].filter(Boolean).join('・')}</span>}
-                              {p.notes && <span className="text-xs truncate"><span className="text-slate-500">備考 </span>{p.notes}</span>}
+                              <span className="text-base font-black whitespace-nowrap">{p.pointName || "---"}</span>
+                              {mark && <span className="text-xs whitespace-nowrap"><span className="text-slate-500">標識 </span><span className="font-bold">{mark}</span></span>}
+                              {(p.setting || p.kind) && <span className="text-xs font-bold whitespace-nowrap" data-testid="print-attrs">{[p.setting, p.kind].filter(Boolean).join('・')}</span>}
+                              {p.notes && <span className="text-xs min-w-0 break-words line-clamp-2"><span className="text-slate-500">備考 </span>{p.notes}</span>}
                             </div>
-                            {showDate && representative && <div className="text-[9px] text-slate-500 shrink-0">撮影日 {representative.lastModified}</div>}
+                            {showDate && representative && <div className="text-[9px] text-slate-500 whitespace-nowrap shrink-0">撮影日 {representative.lastModified}</div>}
                           </div>
-                          <div className="flex-1 grid gap-3 min-h-0 overflow-hidden" style={{ gridTemplateColumns: `repeat(${enabledViewTypes.length === 1 ? 1 : 2}, minmax(0, 1fr))` }}>
-                            {enabledViewTypes.map(vt => (
-                              <div key={vt.id} className="h-full min-h-0 flex flex-col items-center overflow-hidden">
-                                {dirData[vt.id] ? <img src={dirData[vt.id]!.url} className="max-w-full object-contain" style={{ maxHeight: 'calc(100% - 18px)' }} /> : <div className="w-full flex-1 bg-slate-50" />}
-                                <div className="text-[10px] text-center text-slate-600 font-bold tracking-widest pt-0.5">{vt.label}</div>
+                          <div className="flex-1 grid min-h-0 overflow-hidden" style={{ gridTemplateColumns: `repeat(${enabledViewTypes.length === 1 ? 1 : 2}, minmax(0, 1fr))` }}>
+                            {enabledViewTypes.map((vt, i) => (
+                              <div key={vt.id} className={`flex flex-col min-h-0 overflow-hidden ${enabledViewTypes.length > 1 && i % 2 === 1 ? 'border-l border-black' : ''} ${i >= 2 ? 'border-t border-black' : ''}`}>
+                                <div className="flex-1 min-h-0 p-1 flex items-center justify-center overflow-hidden">
+                                  {dirData[vt.id] ? <img src={dirData[vt.id]!.url} className="max-h-full max-w-full object-contain" /> : null}
+                                </div>
+                                <div className="text-[10px] text-center text-slate-600 font-bold tracking-widest py-0.5 shrink-0">{vt.label}</div>
                               </div>
                             ))}
                           </div>

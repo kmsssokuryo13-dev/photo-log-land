@@ -27,7 +27,7 @@ export function PredictionBadge({ prediction, markTypes, activeModelId }: { pred
   const lowConfidence = top.score < prediction.minConfidence;
   const inList = markTypes.includes(top.label) && !ADVISORY_ONLY.includes(top.label);
   const lines = [
-    prediction.autoFillConfidence != null ? `${pct(prediction.autoFillConfidence)}以上で「未設定」に自動入力` : '候補表示のみ',
+    prediction.autoFillConfidence != null ? `${pct(prediction.autoFillConfidence)}以上で空の標識に自動入力` : '候補表示のみ',
     ...prediction.candidates.map((c, i) => `${i + 1}. ${c.label} ${pct(c.score)}${markTypes.includes(c.label) ? '' : '（標識リスト外）'}`),
     prediction.modelLabel,
   ];
