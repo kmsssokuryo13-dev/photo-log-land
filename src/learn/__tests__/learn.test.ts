@@ -38,9 +38,9 @@ describe('collectCandidates', () => {
 });
 
 describe('classKeyFor', () => {
-  it('モデルのクラス名を優先し、無ければ既定の英字、それも無ければ文字コード', () => {
-    expect(classKeyFor('金属鋲', { tack: '金属鋲' })).toBe('tack');
-    expect(classKeyFor('金属鋲')).toBe('metal_tack');
+  it('既定（v03 と同じ英字）→ モデルのクラス名 → 文字コード', () => {
+    expect(classKeyFor('金属鋲', { tack: '金属鋲' })).toBe('metal_pin'); // 既定が先（モデルの有無で変わらない）
+    expect(classKeyFor('石杭', { stone: '石杭' })).toBe('stone');
     expect(classKeyFor('石杭')).toBe('mark_77f3676d');
     expect(classKeyFor('石杭')).toBe(classKeyFor('石杭'));
   });
@@ -54,11 +54,11 @@ describe('planSample', () => {
     const p1 = planSample(idx, cand, 'f'.repeat(64), '.JPG', ctx);
     expect(p1.kind).toBe('new');
     if (p1.kind !== 'new') return;
-    expect(p1.record.path).toBe('metal_plate/ffffffffffffffff.jpg');
+    expect(p1.record.path).toBe('metal_marker/ffffffffffffffff.jpg');
     idx.samples[p1.record.sha256] = p1.record;
     expect(planSample(idx, cand, 'f'.repeat(64), '.JPG', { ...ctx, now: 'later' }).kind).toBe('same');
     const p3 = planSample(idx, { ...cand, label: '金属鋲', aiWrong: false }, 'f'.repeat(64), '.JPG', { ...ctx, now: 'later' });
-    expect(p3).toMatchObject({ kind: 'relabel', oldPath: 'metal_plate/ffffffffffffffff.jpg', record: { path: 'metal_tack/ffffffffffffffff.jpg', savedAt: ctx.now } });
+    expect(p3).toMatchObject({ kind: 'relabel', oldPath: 'metal_marker/ffffffffffffffff.jpg', record: { path: 'metal_pin/ffffffffffffffff.jpg', savedAt: ctx.now } });
   });
   it('一度外れと記録した写真は外れのまま。手で選んだ記録は AI のままの記録で上書きしない', () => {
     const idx = emptyIndex();
@@ -116,14 +116,14 @@ describe('saveLearnSamples', () => {
     const h = dir as unknown as FileSystemDirectoryHandle;
     const r1 = await saveLearnSamples(h, { points: pts('金属鋲'), markTypes: MARKS, originals, siteName: '港町' });
     expect(r1).toEqual({ added: 2, relabeled: 0, total: 2 });
-    expect(dir.list()).toEqual([expect.stringMatching(/^concrete_post\/[0-9a-f]{16}\.jpg$/), expect.stringMatching(/^metal_tack\/[0-9a-f]{16}\.jpg$/), INDEX_FILE]);
+    expect(dir.list()).toEqual([expect.stringMatching(/^concrete_stake\/[0-9a-f]{16}\.jpg$/), expect.stringMatching(/^metal_pin\/[0-9a-f]{16}\.jpg$/), INDEX_FILE]);
     expect(await saveLearnSamples(h, { points: pts('金属鋲'), markTypes: MARKS, originals, siteName: '港町' })).toEqual({ added: 0, relabeled: 0, total: 2 });
     const r3 = await saveLearnSamples(h, { points: pts('金属標'), markTypes: MARKS, originals, siteName: '港町' });
     expect(r3).toEqual({ added: 0, relabeled: 1, total: 2 });
-    expect(dir.list().some(x => x.startsWith('metal_tack/'))).toBe(false);
+    expect(dir.list().some(x => x.startsWith('metal_pin/'))).toBe(false);
     const idx = await readIndex(h);
     const moved = Object.values(idx.samples).find(s => s.pointName === 'K1')!;
-    expect(moved).toMatchObject({ label: '金属標', classKey: 'metal_plate', aiWrong: true, caseKey: '港町|2026-11' });
+    expect(moved).toMatchObject({ label: '金属標', classKey: 'metal_marker', aiWrong: true, caseKey: '港町|2026-11' });
     expect(await (originals.get('a')!).text()).toBe('photo-a');
     expect(countByLabel(idx)).toEqual([{ label: '金属標', count: 1, wrong: 1 }, { label: 'コンクリート杭', count: 1, wrong: 0 }]);
   });

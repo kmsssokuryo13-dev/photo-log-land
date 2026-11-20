@@ -18,6 +18,9 @@ export function LearnPanel({ learn }: { learn: LearnFolder }) {
               {learn.folderName}{learn.counts ? `（${total}枚）` : ''}
             </span>
           )}
+          {learn.needsPermission && (
+            <button onClick={() => void learn.allow()} className="bg-blue-600 text-white px-3 py-1 rounded-lg text-xs font-bold hover:bg-blue-700" title="開き直した後は、ためる前に許可が要ります" data-testid="learn-allow">許可</button>
+          )}
           <button onClick={() => void learn.choose()} className="border border-slate-200 text-slate-600 px-3 py-1 rounded-lg text-xs font-bold hover:border-blue-300" data-testid="learn-choose">
             {learn.folderName ? '変更' : 'フォルダを選ぶ'}
           </button>

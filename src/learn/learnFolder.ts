@@ -107,9 +107,16 @@ export async function readIndex(dir: FileSystemDirectoryHandle): Promise<LearnIn
   return parseIndex(await readText(dir, INDEX_FILE));
 }
 
+// 同じ写真を毎回計算し直さない（File は中身が変わらない）
+const shaCache = new WeakMap<Blob, string>();
+
 export async function sha256Hex(file: Blob): Promise<string> {
+  const hit = shaCache.get(file);
+  if (hit) return hit;
   const buf = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  shaCache.set(file, hex);
+  return hex;
 }
 
 function extOf(name: string): string {

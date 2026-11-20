@@ -11,7 +11,8 @@ inbox は写真台帳アプリの「学習データ」で選んだフォルダ�
 2. 学習に使う枚数を種類ごとにそろえる（上限 = 一番少ない種類の --ratio 倍、かつ --max-per-class まで）。
    上限を超える種類は、AI が外れた写真を先に入れ、残りは案件を順番に回して選ぶ（同じ案件ばかりにしない）。
 3. 少ない種類が損をしないよう、種類ごとの重み（class_weights.json）も書く。
-4. --min-per-class に届かない種類は学習に入れない（写真はたまり続け、届いた時に入る）。
+4. AI が入れたまま（人が直していない）標識の写真は学習に使わない（--use-ai-labels で使う）。
+5. --min-per-class に届かない種類は学習に入れない（写真はたまり続け、届いた時に入る）。
 
 out には train\\<種類>\\, val\\<種類>\\, test\\<種類>\\ と class_weights.json, dataset_report.json を作る。
 写真はコピーする（inbox の写真は動かさない・消さない）。
@@ -59,11 +60,11 @@ def update_test_set(inbox: Path, samples: list[dict], per_class: int, seed: int)
     for r in samples:
         by_class[r["classKey"]].append(r)
     for cls, rows in sorted(by_class.items()):
-        have = [s for s in fixed.get(cls, []) if s in by_sha]
+        # 後で標識を直した写真（今は別の種類）は外す。直した先の種類で選び直される
+        have = [s for s in fixed.get(cls, []) if s in by_sha and by_sha[s]["classKey"] == cls]
         limit = min(per_class, len(rows) // 3)
         if len(have) >= limit:
-            if have:
-                fixed[cls] = have
+            fixed[cls] = have
             continue
         used_groups = {group_of(by_sha[s]) for s in have}
         groups: dict[str, list[dict]] = defaultdict(list)
@@ -78,8 +79,10 @@ def update_test_set(inbox: Path, samples: list[dict], per_class: int, seed: int)
             have.extend(r["sha256"] for r in groups[g])
             if len(have) >= limit:
                 break
-        if have:
-            fixed[cls] = have
+        fixed[cls] = have
+    # どの写真も今は無い・別の種類になった種類を消す
+    fixed = {c: [s for s in v if s in by_sha and by_sha[s]["classKey"] == c] for c, v in fixed.items()}
+    fixed = {c: v for c, v in fixed.items() if v}
     path.write_text(json.dumps({"schema_version": 1, "classes": fixed}, ensure_ascii=False, indent=1), encoding="utf-8")
     return fixed
 
@@ -113,6 +116,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-per-class", type=int, default=1500)
     ap.add_argument("--val-ratio", type=float, default=0.15)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--use-ai-labels", action="store_true",
+                    help="AI が入れたまま（人が直していない）標識の写真も学習に使う。既定は使わない（AI の間違いを学び直さないため）")
     a = ap.parse_args(argv)
 
     samples = load_samples(a.inbox)
@@ -129,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
         labels[r["classKey"]] = r["label"]
         if r["sha256"] in test_shas or (r["classKey"], group_of(r)) in test_groups:
             continue  # 試験に使った点は学習に使わない（似た写真で点数が上がって見えるのを防ぐ）
+        if r.get("source") == "ai" and not r.get("aiWrong") and not a.use_ai_labels:
+            continue
         by_class[r["classKey"]].append(r)
 
     used = {c: rows for c, rows in by_class.items() if len(rows) >= a.min_per_class}
@@ -167,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         by_sha = {r["sha256"]: r for r in samples}
         for s in shas:
             r = by_sha.get(s)
-            if r:
+            if r and r["classKey"] == cls:
                 dst = a.out / "test" / cls / Path(r["path"]).name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(a.inbox / r["path"], dst)

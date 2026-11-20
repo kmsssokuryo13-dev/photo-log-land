@@ -9,25 +9,25 @@ export const NOT_A_LABEL = ['未設定', '計算点'];
 
 /**
  * 既定の標識名 → 学習フォルダ名（英数字。Windows の学習ツールが日本語のパスで読めないことがあるため）。
- * 使用中モデルの classes に同じ表示名があれば、そちらのクラス名を優先する。
+ * boundary_v03 のクラス名にそろえる。モデルを使っていてもいなくても、同じ標識は同じフォルダにする。
  */
 export const DEFAULT_CLASS_KEYS: Record<string, string> = {
-  '金属鋲': 'metal_tack',
-  '金属標': 'metal_plate',
-  'プラスチック杭': 'plastic_post',
-  'コンクリート杭': 'concrete_post',
+  '金属鋲': 'metal_pin',
+  '金属標': 'metal_marker',
+  'プラスチック杭': 'plastic_stake',
   'コンクリート角': 'concrete_corner',
-  '木杭': 'wood_post',
+  'コンクリート杭': 'concrete_stake',
+  '木杭': 'wood_stake',
   '刻印': 'engraved_mark',
-  '真鍮標識': 'brass_mark',
+  '真鍮標識': 'brass_marker',
   'マンホール中心': 'manhole_center',
 };
 
-/** 標識名から学習フォルダ名を決める。リストに無い名前は文字コードから作る（同じ名前なら毎回同じ） */
+/** 標識名から学習フォルダ名を決める。既定 → 使用中モデルのクラス名 → 文字コード（同じ名前なら毎回同じ）の順 */
 export function classKeyFor(label: string, modelDisplayNames: Record<string, string> = {}): string {
+  if (DEFAULT_CLASS_KEYS[label]) return DEFAULT_CLASS_KEYS[label];
   const fromModel = Object.entries(modelDisplayNames).find(([, v]) => v === label)?.[0];
   if (fromModel && /^[A-Za-z0-9_-]+$/.test(fromModel)) return fromModel;
-  if (DEFAULT_CLASS_KEYS[label]) return DEFAULT_CLASS_KEYS[label];
   const hex = Array.from(label.normalize('NFKC')).map(c => c.codePointAt(0)!.toString(16)).join('');
   return `mark_${hex}`.slice(0, 60);
 }

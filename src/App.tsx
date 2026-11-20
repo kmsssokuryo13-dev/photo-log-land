@@ -362,8 +362,10 @@ export default function App() {
     }
   };
 
-  const printLedger = () => {
-    void saveLearnData();
+  // 許可の窓はボタンを押した直後にしか出せないので、印刷の窓より先に許可を聞く
+  const printLedger = async () => {
+    const ok = learn.folderName ? await learn.allow() : false;
+    if (ok) void saveLearnData();
     window.print();
   };
 
@@ -380,7 +382,7 @@ export default function App() {
     });
     setSending(true);
     setErrorMessage("");
-    void saveLearnData();
+    if (learn.folderName && await learn.allow()) void saveLearnData();
     try {
       const n = await sendMarksToSurvia(survia, sent);
       setNotice(`SURVIA へ ${n} 点を戻しました`);
@@ -639,7 +641,7 @@ export default function App() {
         {/* === プレビュータブ === */}
         {activeTab === 'preview' && (
           <div className="h-full overflow-y-auto p-8 bg-slate-300/50 flex flex-col items-center gap-6 print:p-0 print:bg-white print:block">
-            <button onClick={printLedger} className="no-print bg-slate-900 text-white px-10 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg hover:bg-slate-800 transition">
+            <button onClick={() => void printLedger()} className="no-print bg-slate-900 text-white px-10 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg hover:bg-slate-800 transition">
               <Icon name="Printer" size={18} /> 印刷画面を開く
             </button>
             <div className="a4-page-container print:block">
