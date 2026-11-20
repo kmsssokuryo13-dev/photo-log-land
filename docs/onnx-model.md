@@ -83,6 +83,8 @@
 | `min_confidence` | | 0 | これ未満は `AI ?`（参考外）表示 |
 | `auto_fill_confidence` | | 0.9 | これ以上なら「未設定」の標識へ自動入力（0より大きく1以下）。`null` で自動入力しない |
 
+学習側（BoundaryMarkerAI）が書き出す形式もそのまま読めます: `task: "image_classification"`、`modelId`（= model_name）、`preprocessing`（`padColorRGB`・`colorMode`・`pixelScale: "0_to_1"`・`resize`）、`classToAppValue`（= display_names）、`autoFill: { "enabled": false }`（= 候補表示のみ。`enabled: true` なら `threshold`、なければ 0.9）。
+
 対応しているのは分類モデル（出力 `[1, クラス数]` の float32）のみです。入力は NCHW float32 `[1, 3, H, W]`。
 
 ## 前処理（学習時の再現）
