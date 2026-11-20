@@ -1,15 +1,15 @@
 """固定の試験写真で今のモデルと新しいモデルを比べ、採用してよいか判定する。
 
 使い方（PowerShell）:
-    python compare_models.py --inbox C:\\BoundaryMarkerAI\\inbox ^
+    python compare_models.py --dataset C:\\BoundaryMarkerAI\\dataset_v05 ^
         --old C:\\BoundaryMarkerAI\\models\\boundary_v03 --new C:\\BoundaryMarkerAI\\models\\boundary_v04
 
 --old / --new は .onnx と model_config.json が入ったフォルダ。前処理は写真台帳アプリと同じ
 （EXIF の向き補正・RGB・114 の灰色で中央に正方形パディング・入力サイズへ縮小・0〜1）。
 
-採用の条件（2026-11-20 推奨案「どの種類も下がらない時だけ」）:
+採用の条件（2026-11-20 ユーザー選択「全体が上がり、下がりは少しまで」）:
 - 全体の正解率（両方が知っている種類）が今のモデルより上がる。同じなら、新しいモデルが判別できる種類が増えた時だけ
-- どの種類の正解率も今のモデル以上（--allow-drop で 1種類あたりの下がりを許す幅を指定できる。既定 0）
+- どの種類の正解率も、今のモデルから 2 ポイントより下がらない（--allow-drop で変えられる。0 なら下がり不可）
 - 今のモデルに無い種類は比べない（新しい種類は正解率を表示するだけ）
 
 結果は画面と --new フォルダの compare_report.json に書く。採用なら終了コード 0、見送りなら 2。
@@ -24,6 +24,9 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
+
+# 1種類あたり許す正解率の下がり（2026-11-20 ユーザー「全体が上がり、下がりは少しまで、もう少し厳しく」）
+ALLOW_DROP = 0.02
 
 
 def load_config(folder: Path) -> dict:
@@ -44,8 +47,8 @@ def load_config(folder: Path) -> dict:
     out = get("output", default={}) or {}
     return {
         "width": int(w), "height": int(h),
-        "letterbox": pre.get("letterbox", True),
-        "pad": tuple(pre.get("pad_color", pre.get("padColor", [114, 114, 114]))),
+        "letterbox": pre.get("letterbox", pre.get("padToSquare", True)),
+        "pad": tuple(pre.get("pad_color", pre.get("padColor", pre.get("padColorRGB", [114, 114, 114])))),
         "pad_pos": pre.get("pad_position", pre.get("padPosition", "center")),
         "bgr": str(pre.get("channel_order", pre.get("channelOrder", "RGB"))).upper() == "BGR",
         "scale": float(scale),
@@ -99,6 +102,17 @@ class Model:
         return self.cfg["labels"][int(np.argmax(y))]
 
 
+def load_test_dir(dataset: Path) -> list[tuple[Path, str]]:
+    """make_dataset.py が作った dataset\\test\\<種類>\\（種類名は class_labels.json で標識名へ）"""
+    labels = json.loads((dataset / "class_labels.json").read_text(encoding="utf-8"))
+    out = []
+    for cls_dir in sorted(p for p in (dataset / "test").iterdir() if p.is_dir()):
+        for f in sorted(cls_dir.iterdir()):
+            if f.is_file():
+                out.append((f, labels.get(cls_dir.name, cls_dir.name)))
+    return out
+
+
 def load_test(inbox: Path) -> list[tuple[Path, str]]:
     test = json.loads((inbox / "test_set.json").read_text(encoding="utf-8"))["classes"]
     samples = json.loads((inbox / "samples.json").read_text(encoding="utf-8"))["samples"]
@@ -146,13 +160,15 @@ def decide(old: dict, new: dict, allow_drop: float) -> tuple[bool, list[str]]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--inbox", type=Path, required=True)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--inbox", type=Path, help="学習フォルダ（test_set.json の写真で比べる）")
+    src.add_argument("--dataset", type=Path, help="make_dataset.py の出力（test フォルダで比べる）")
     ap.add_argument("--old", type=Path, required=True)
     ap.add_argument("--new", type=Path, required=True)
-    ap.add_argument("--allow-drop", type=float, default=0.0, help="1種類あたり許す下がり（0.05 = 5ポイント）")
+    ap.add_argument("--allow-drop", type=float, default=ALLOW_DROP, help="1種類あたり許す下がり（0.02 = 2ポイント）")
     a = ap.parse_args(argv)
 
-    test = load_test(a.inbox)
+    test = load_test(a.inbox) if a.inbox else load_test_dir(a.dataset)
     if not test:
         print("試験用の写真がありません。先に make_dataset.py を実行してください", file=sys.stderr)
         return 1

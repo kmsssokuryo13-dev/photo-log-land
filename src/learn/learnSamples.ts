@@ -17,7 +17,7 @@ export const DEFAULT_CLASS_KEYS: Record<string, string> = {
   'プラスチック杭': 'plastic_stake',
   'コンクリート角': 'concrete_corner',
   'コンクリート杭': 'concrete_stake',
-  '木杭': 'wood_stake',
+  '木杭': 'wooden_stake',
   '刻印': 'engraved_mark',
   '真鍮標識': 'brass_marker',
   'マンホール中心': 'manhole_center',
