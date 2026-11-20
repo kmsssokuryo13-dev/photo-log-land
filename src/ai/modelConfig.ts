@@ -46,6 +46,21 @@ export class ModelConfigError extends Error {
 
 type Json = Record<string, unknown>;
 
+/** 画像分類として受け付ける task 名（学習側の model_config.json は image_classification と書く） */
+const CLASSIFY_TASKS = ['classify', 'image_classification', 'classification'];
+
+/** 学習側の pixelScale 表記 → scale */
+const PIXEL_SCALES: Record<string, number> = { '0_to_1': 255, '0_to_255': 1 };
+
+/** 学習側の autoFill: { enabled, threshold } を auto_fill_confidence 相当に直す */
+function autoFillFromObject(v: unknown): unknown {
+  if (v === undefined) return undefined;
+  if (!isObject(v)) throw new ModelConfigError('autoFill はオブジェクトで指定してください');
+  const enabled = bool(v.enabled, 'autoFill.enabled', true);
+  if (!enabled) return null;
+  return pick(v, 'threshold', 'confidence');
+}
+
 function isObject(v: unknown): v is Json {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -105,23 +120,29 @@ export function parseModelConfig(raw: unknown): ModelConfig {
   if (schemaVersion !== undefined && schemaVersion !== 1) throw new ModelConfigError(`未対応の schema_version: ${String(schemaVersion)}`);
 
   const task = pick(raw, 'task');
-  if (task !== undefined && task !== 'classify') throw new ModelConfigError(`未対応の task: ${String(task)}（classify のみ対応）`);
+  if (task !== undefined && !CLASSIFY_TASKS.includes(String(task))) throw new ModelConfigError(`未対応の task: ${String(task)}（画像分類のみ対応）`);
 
   const input = isObject(raw.input) ? raw.input : {};
   const layout = pick(input, 'layout');
   if (layout !== undefined && layout !== 'NCHW') throw new ModelConfigError('input.layout は NCHW のみ対応です');
   const dtype = pick(input, 'dtype');
   if (dtype !== undefined && dtype !== 'float32') throw new ModelConfigError('input.dtype は float32 のみ対応です');
+  const channels = pick(input, 'channels');
+  if (channels !== undefined && channels !== 3) throw new ModelConfigError('input.channels は 3 のみ対応です');
+  const pre = isObject(raw.preprocess) ? raw.preprocess : isObject(raw.preprocessing) ? raw.preprocessing : {};
+  const resize = pick(pre, 'resize');
+  const resizeWH = Array.isArray(resize) && resize.length === 2 ? resize : [undefined, undefined];
   const size = pick(input, 'size', 'imgsz');
-  const width = posInt(pick(input, 'width') ?? size, 'input.width', 640);
-  const height = posInt(pick(input, 'height') ?? size, 'input.height', 640);
+  const width = posInt(pick(input, 'width') ?? size ?? resizeWH[0], 'input.width', 640);
+  const height = posInt(pick(input, 'height') ?? size ?? resizeWH[1], 'input.height', 640);
 
-  const pre = isObject(raw.preprocess) ? raw.preprocess : {};
-  const channelOrder = pick(pre, 'channel_order', 'channelOrder', 'color') ?? pick(input, 'color');
+  const channelOrder = pick(pre, 'channel_order', 'channelOrder', 'color', 'colorMode', 'color_mode') ?? pick(input, 'color');
   if (channelOrder !== undefined && channelOrder !== 'RGB' && channelOrder !== 'BGR') throw new ModelConfigError('channel_order は RGB か BGR で指定してください');
   const padPosition = pick(pre, 'pad_position', 'padPosition');
   if (padPosition !== undefined && padPosition !== 'center' && padPosition !== 'top-left') throw new ModelConfigError('pad_position は center か top-left で指定してください');
-  const scale = num(pick(pre, 'scale'), 'preprocess.scale', 255);
+  const pixelScale = pick(pre, 'pixelScale', 'pixel_scale');
+  if (pixelScale !== undefined && !(String(pixelScale) in PIXEL_SCALES)) throw new ModelConfigError('pixelScale は 0_to_1 か 0_to_255 で指定してください');
+  const scale = num(pick(pre, 'scale') ?? (pixelScale === undefined ? undefined : PIXEL_SCALES[String(pixelScale)]), 'preprocess.scale', 255);
   if (scale <= 0) throw new ModelConfigError('preprocess.scale は正の数で指定してください');
   const std = triple(pick(pre, 'std'), 'preprocess.std', [1, 1, 1]);
   if (std.some(s => s === 0)) throw new ModelConfigError('preprocess.std に 0 は使えません');
@@ -147,7 +168,7 @@ export function parseModelConfig(raw: unknown): ModelConfig {
   if (classes.length < 2) throw new ModelConfigError('classes は2つ以上必要です');
   if (new Set(classes).size !== classes.length) throw new ModelConfigError('classes に重複があります');
 
-  const rawDisplay = pick(raw, 'display_names', 'displayNames');
+  const rawDisplay = pick(raw, 'display_names', 'displayNames', 'classToAppValue', 'class_to_app_value');
   const displayNames: Record<string, string> = {};
   if (rawDisplay !== undefined) {
     if (!isObject(rawDisplay)) throw new ModelConfigError('display_names はオブジェクトで指定してください');
@@ -160,7 +181,8 @@ export function parseModelConfig(raw: unknown): ModelConfig {
   const topK = posInt(pick(raw, 'top_k', 'topK'), 'top_k', 3);
   const minConfidence = num(pick(raw, 'min_confidence', 'minConfidence'), 'min_confidence', 0);
   if (minConfidence < 0 || minConfidence > 1) throw new ModelConfigError('min_confidence は 0〜1 で指定してください');
-  const rawAutoFill = pick(raw, 'auto_fill_confidence', 'autoFillConfidence');
+  const directAutoFill = pick(raw, 'auto_fill_confidence', 'autoFillConfidence');
+  const rawAutoFill = directAutoFill !== undefined ? directAutoFill : autoFillFromObject(pick(raw, 'autoFill', 'auto_fill'));
   let autoFillConfidence: number | null = rawAutoFill === null ? null : DEFAULT_AUTO_FILL_CONFIDENCE;
   if (rawAutoFill !== undefined && rawAutoFill !== null) {
     autoFillConfidence = num(rawAutoFill, 'auto_fill_confidence', 0);
@@ -169,13 +191,13 @@ export function parseModelConfig(raw: unknown): ModelConfig {
 
   return {
     schemaVersion: 1,
-    modelName: str(pick(raw, 'model_name', 'modelName'), 'model_name', 'model'),
+    modelName: str(pick(raw, 'model_name', 'modelName', 'modelId', 'model_id'), 'model_name', 'model'),
     modelVersion: str(pick(raw, 'model_version', 'modelVersion', 'version'), 'model_version'),
     input: { name: optStr(pick(input, 'name'), 'input.name'), width, height },
     preprocess: {
       exifTranspose: bool(pick(pre, 'exif_transpose', 'exifTranspose'), 'preprocess.exif_transpose', true),
       letterbox: bool(pick(pre, 'letterbox', 'pad_to_square', 'padToSquare'), 'preprocess.letterbox', true),
-      padColor: triple(pick(pre, 'pad_color', 'padColor'), 'preprocess.pad_color', [114, 114, 114], [0, 255]),
+      padColor: triple(pick(pre, 'pad_color', 'padColor', 'padColorRGB', 'pad_color_rgb'), 'preprocess.pad_color', [114, 114, 114], [0, 255]),
       padPosition: (padPosition as PadPosition | undefined) ?? 'center',
       channelOrder: (channelOrder as 'RGB' | 'BGR' | undefined) ?? 'RGB',
       scale,
