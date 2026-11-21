@@ -14,6 +14,8 @@ import { aiTargetFiles, applyAutoFill, applyPrediction, isAiTargetView, predicti
 import { isoDate, readHandoffRef, receiveFromSurvia, sendMarksToSurvia, stripHandoffRef, type SurviaMark, type SurviaRef } from './utils/surviaHandoff';
 import { COMPRESSION_MODES, compressImage, isImageFile, mapPool, type CompressionModeKey } from './utils/imageLoad';
 import { clearWork, deleteOriginals, loadOriginals, loadWork, putOriginal, saveWork } from './utils/workStore';
+import { LearnPanel } from './learn/LearnPanel';
+import { useLearnFolder } from './learn/useLearnFolder';
 
 // --- 定数 ---
 
@@ -46,6 +48,7 @@ interface BoundaryPoint {
   pointName: string;
   markType: string;
   markSource?: 'ai'; // AI が自動入力した標識（手で選び直すと消える）
+  fromSurvia?: boolean; // SURVIA から受け取った標識（手で選び直すと消える）。学習データの記録に使う
   directions: Record<number, Partial<Record<ViewId, FileData>>>;
   selectedDirection: number;
   notes: string;
@@ -141,6 +144,8 @@ export default function App() {
   const ai = useOnnxModels();
   const originalFilesRef = useRef(new Map<string, File>());
   const [reclassifying, setReclassifying] = useState(false);
+  // 学習データ：標識が決まった近景写真を学習フォルダへためる（印刷・SURVIAへ戻す時）
+  const learn = useLearnFolder();
 
   // localStorage sync
   // Gemini 判別は廃止（2026-11-05 ユーザー決定）。以前保存した API キーを PC に残さない
@@ -246,7 +251,7 @@ export default function App() {
         const m = marks.find(x => x.markType && same(x, p));
         const a = marks.find(x => same(x, p));
         const q = a && (a.setting || a.kind) ? { ...p, setting: a.setting, kind: a.kind } : p;
-        return m && q.markType === "未設定" ? { ...q, markType: m.markType } : q;
+        return m && q.markType === "未設定" ? { ...q, markType: m.markType, fromSurvia: true } : q;
       });
       return applyAutoFill(withMarks, markTypes, ai.currentModelId());
     });
@@ -342,6 +347,28 @@ export default function App() {
     setActiveTab('import');
   };
 
+  /** 標識が決まった近景写真を学習フォルダへためる。失敗しても印刷・戻しは止めない */
+  const saveLearnData = async () => {
+    if (!learn.folderName) return;
+    const active = ai.models.find(m => m.id === ai.activeId);
+    try {
+      const r = await learn.save({
+        points, markTypes, originals: originalFilesRef.current, siteName: ledgerSettings.siteName,
+        modelDisplayNames: active?.config.displayNames,
+      });
+      if (r && (r.added || r.relabeled)) setNotice(`学習データ +${r.added}枚${r.relabeled ? `・直し ${r.relabeled}枚` : ''}`);
+    } catch {
+      setErrorMessage('学習データを保存できません');
+    }
+  };
+
+  // 許可の窓はボタンを押した直後にしか出せないので、印刷の窓より先に許可を聞く
+  const printLedger = async () => {
+    const ok = learn.folderName ? await learn.allow() : false;
+    if (ok) void saveLearnData();
+    window.print();
+  };
+
   /** 台帳の点名・標識・撮影日（左・右の写真）を SURVIA へ戻す。 */
   const sendToSurvia = async () => {
     if (!survia || sending) return;
@@ -355,6 +382,7 @@ export default function App() {
     });
     setSending(true);
     setErrorMessage("");
+    if (learn.folderName && await learn.allow()) void saveLearnData();
     try {
       const n = await sendMarksToSurvia(survia, sent);
       setNotice(`SURVIA へ ${n} 点を戻しました`);
@@ -510,6 +538,7 @@ export default function App() {
               </div>
             </div>
             <ModelManager ai={ai} onReclassify={reclassifyAll} reclassifyCount={reclassifyTargets.length} reclassifying={reclassifying} />
+            <LearnPanel learn={learn} />
             <div className="grid grid-cols-2 gap-6">
               <label className="flex flex-col items-center justify-center border-4 border-dashed border-slate-200 bg-white rounded-3xl p-12 cursor-pointer hover:border-blue-400 group transition">
                 <Icon name="Upload" size={48} className="text-slate-200 mb-2 group-hover:text-blue-200" />
@@ -566,7 +595,7 @@ export default function App() {
                         <div className="flex flex-col">
                           <span className="text-[9px] font-bold text-slate-400">標識</span>
                           <div className="flex items-center gap-2">
-                            <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value, markSource: undefined })} title={aiFilled ? `AIが自動入力${aiScore !== undefined ? `（${Math.round(aiScore * 100)}%）` : ''}。選び直すと手入力になります` : undefined} data-testid="mark-select" data-ai-filled={aiFilled ? 'true' : undefined} className={`border rounded px-2 py-1 text-xs font-bold h-8 ${aiFilled ? 'bg-emerald-50 border-emerald-400 text-emerald-800' : 'bg-slate-50'}`}>
+                            <select value={point.markType} onChange={e => updatePoint(point.id, { markType: e.target.value, markSource: undefined, fromSurvia: undefined })} title={aiFilled ? `AIが自動入力${aiScore !== undefined ? `（${Math.round(aiScore * 100)}%）` : ''}。選び直すと手入力になります` : undefined} data-testid="mark-select" data-ai-filled={aiFilled ? 'true' : undefined} className={`border rounded px-2 py-1 text-xs font-bold h-8 ${aiFilled ? 'bg-emerald-50 border-emerald-400 text-emerald-800' : 'bg-slate-50'}`}>
                               <option value={UNSET_MARK}></option>
                               {markTypes.map(t => <option key={t}>{t}</option>)}
                               {point.markType !== "未設定" && !markTypes.includes(point.markType) && <option key={point.markType}>{point.markType}</option>}
@@ -612,7 +641,7 @@ export default function App() {
         {/* === プレビュータブ === */}
         {activeTab === 'preview' && (
           <div className="h-full overflow-y-auto p-8 bg-slate-300/50 flex flex-col items-center gap-6 print:p-0 print:bg-white print:block">
-            <button onClick={() => window.print()} className="no-print bg-slate-900 text-white px-10 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg hover:bg-slate-800 transition">
+            <button onClick={() => void printLedger()} className="no-print bg-slate-900 text-white px-10 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-lg hover:bg-slate-800 transition">
               <Icon name="Printer" size={18} /> 印刷画面を開く
             </button>
             <div className="a4-page-container print:block">

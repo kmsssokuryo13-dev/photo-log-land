@@ -57,8 +57,34 @@ describe('parseModelConfig', () => {
     [{ ...base, auto_fill_confidence: 0 }],
     [{ ...base, auto_fill_confidence: 1.5 }],
     [{ ...base, auto_fill_confidence: '0.9' }],
+    [{ ...base, input: { channels: 1 } }],
+    [{ ...base, preprocessing: { pixelScale: '0_to_2' } }],
+    [{ ...base, autoFill: true }],
   ])('不正な設定は拒否する %#', (raw) => {
     expect(() => parseModelConfig(raw)).toThrow(ModelConfigError);
+  });
+
+  it('学習側の model_config.json（task: image_classification・camelCase）を読める', () => {
+    const c = parseModelConfig({
+      schemaVersion: 1, modelId: 'boundary_v03', modelVersion: '0.3', modelFile: 'boundary_v03.onnx', task: 'image_classification',
+      input: { width: 640, height: 640, channels: 3, layout: 'NCHW', dtype: 'float32' },
+      preprocessing: { exifTranspose: true, colorMode: 'RGB', preserveWholeImage: true, padToSquare: true, padColorRGB: [114, 114, 114], resize: [640, 640], pixelScale: '0_to_1' },
+      classes: ['concrete_corner', 'metal_marker', 'metal_pin', 'plastic_stake'],
+      classToAppValue: { metal_pin: '金属鋲', metal_marker: '金属標', plastic_stake: 'プラスチック杭', concrete_corner: 'コンクリート角' },
+      aiSupportedClasses: ['concrete_corner', 'metal_marker', 'metal_pin', 'plastic_stake'],
+      autoFill: { enabled: false },
+    });
+    expect(c.modelName).toBe('boundary_v03');
+    expect(c.modelVersion).toBe('0.3');
+    expect(c.input).toEqual({ name: null, width: 640, height: 640 });
+    expect(c.preprocess).toEqual({
+      exifTranspose: true, letterbox: true, padColor: [114, 114, 114], padPosition: 'center',
+      channelOrder: 'RGB', scale: 255, mean: [0, 0, 0], std: [1, 1, 1],
+    });
+    expect(c.displayNames.metal_pin).toBe('金属鋲');
+    expect(c.autoFillConfidence).toBeNull(); // enabled: false は候補表示のみ
+    expect(parseModelConfig({ ...base, autoFill: { enabled: true, threshold: 0.8 } }).autoFillConfidence).toBe(0.8);
+    expect(parseModelConfig({ ...base, autoFill: { enabled: true } }).autoFillConfidence).toBe(0.9);
   });
 
   it('新旧モデルのクラス差分', () => {

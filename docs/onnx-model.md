@@ -83,6 +83,8 @@
 | `min_confidence` | | 0 | これ未満は `AI ?`（参考外）表示 |
 | `auto_fill_confidence` | | 0.9 | これ以上なら「未設定」の標識へ自動入力（0より大きく1以下）。`null` で自動入力しない |
 
+学習側（BoundaryMarkerAI）が書き出す形式もそのまま読めます: `task: "image_classification"`、`modelId`（= model_name）、`preprocessing`（`padColorRGB`・`colorMode`・`pixelScale: "0_to_1"`・`resize`）、`classToAppValue`（= display_names）、`autoFill: { "enabled": false }`（= 候補表示のみ。`enabled: true` なら `threshold`、なければ 0.9）。
+
 対応しているのは分類モデル（出力 `[1, クラス数]` の float32）のみです。入力は NCHW float32 `[1, 3, H, W]`。
 
 ## 前処理（学習時の再現）
@@ -104,3 +106,7 @@ GitHub Pages はクロスオリジン分離できないため、単一スレッ�
 ## コミットしないもの
 
 `*.onnx`、`models/`、`private/` は `.gitignore` 済みです。モデル本体・実務写真はリポジトリに入れないでください。
+
+## 使うほど賢くする（学習データ）
+
+「読込」タブの「学習データ」でフォルダを選ぶと、印刷画面を開く時・SURVIAへ戻す時に、標識が決まった近景写真をそのフォルダへためます（PCの中だけ。外へは送りません）。偏りを抑えたデータセットの作り方と、新旧モデルの比べ方は [training/README.md](../training/README.md)。
